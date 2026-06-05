@@ -26,7 +26,7 @@
 
 - fixed completion mode, now still supported
 
-- refactor of parsing ai block header in cui.el
+- refactor of parsing cui block header in cui.el
 
 
 * v0.3 [2026-04-26 Sun]

@@ -32,13 +32,13 @@
 
 ;;; Commentary:
 
-;; CUI as a minor mode extend Org major mode with "ai block" that
+;; CUI as a minor mode extend Org major mode with "cui block" that
 ;;   allows you to interact with the OpenAI-compatible REST APIs.
 
 ;; CUI was inspired by org-ai package of Robert Krahn <https://github.com/rksm/org-ai>
 
 ;; It allows you to:
-;; - Use #+begin_ai..#+end_ai blocks for org-mode
+;; - Use #+begin_cui..#+end_cui blocks for org-mode
 ;; - Call multiple requests from multiple block and buffers in parallel.
 ;; - Use tags `@Backtrace` @Bt and Org links to insert target in query.
 ;; - Highlighting for major elements.
@@ -75,7 +75,7 @@
 ;; The file is picked up when the package is loaded.
 ;;
 ;; Keys binded by default:
-;; - In block #+begin_ai..#+end_ai blocks:
+;; - In block #+begin_cui..#+end_cui blocks:
 ;;     - C-c C-c - to send the text to the OpenAI API and insert a response
 ;;     - C-c . - to inspect raw data (and C-u C-c .)
 ;;     - C-c C-.  - to see url.el raw HTTP data (working only during request)
@@ -126,7 +126,7 @@
 
 ;; - make cui-variable.el and pass them to -api.el functions as parameters.
 ;; - provide ability to replace url-http with plz or cui-restapi with llm(plz)
-;; - implement "#+PROPERTY: var foo=1" and "#+begin_ai :var
+;; - implement "#+PROPERTY: var foo=1" and "#+begin_cui :var
 ;;       foo=1" and to past to text in [foo]
 ;; - more tags? like: "Fix @problems then document the
 ;;         changes in @/CHANGELOG.md" @url, @file, @folder, @header? (Org)
@@ -210,7 +210,7 @@ If you specify :chain at block parameters line, associated function will
 
 ;; -=-= C-c C-c main interface
 (defun cui-ctrl-c-ctrl-c ()
-  "Remove result and parse ai block header parameters."
+  "Remove result and parse cui block header parameters."
   (when (cui-block-p)
     (cui-block-remove-result)
     (cui-call-this-or-that cui-req-type-functions ; plist: (:key #'function)
@@ -246,7 +246,7 @@ REQ-TYPE here is :chain, not used."
   "Get req-type and call appropriate function.
 Call function from FN-LIST by comparing keyword from INFO and in
  FN-LIST.
-If you specify :chain in ai block, we call related function.
+If you specify :chain in cui block, we call related function.
 FN-LIST is`cui-req-type-functions' variable.
 FN-DEFAULT is default function to call if no keyword was found.
 Optional argument ARGS will be passed to fn call."
@@ -268,8 +268,8 @@ Optional argument ARGS will be passed to fn call."
 
 
 (defun cui-parse-org-header ()
-  "Parsing ai block header and parameters.
-Return list values from ai block header or ORG properties set by looking
+  "Parsing cui block header and parameters.
+Return list values from cui block header or ORG properties set by looking
  at all up levels."
   (let* ((element (cui-block-p)) ; cui-block.el
          (info (cui-block-get-info element)) ; ((:max-tokens . 150) (:service . "together") (:model . "xxx")) ; cui-block.el
@@ -286,18 +286,18 @@ Return list values from ai block header or ORG properties set by looking
           (presence-penalty (cui-block--get-val info	:presence-penalty "PRESENCE-PENALTY" nil 'number))
           (stream (cui-block--get-val info		:stream "STREAM" t 'bool)))
       (when (and info (not (assoc :model info)))
-        (user-error "Model not specified nor in ai block nor in cui-restapi-con-model.  Please add :model key without value to header to disable.?"))
+        (user-error "Model not specified nor in cui block nor in cui-restapi-con-model.  Please add :model key without value to header to disable.?"))
       (list element noweb-control sys-prompt model max-tokens top-p temperature frequency-penalty presence-penalty service stream ; model params
             info))))
 
 ;; cui-prepare-messages
 (defun cui-prepare-messages (req-type element noweb-control sys-prompt max-tokens)
-  "Read content of ai block and prepare it to request.
+  "Read content of cui block and prepare it to request.
 REQ-TYPE is a symbol as a key without : from `cui-req-type-functions'.
-ELEMENT is ai block ORG element.
+ELEMENT is cui block ORG element.
 NOWEB-CONTROL is bool a result of processing ai header and Org
  properties.
-SYS-PROMPT is :sys keyword of ai block that will be placed as the first
+SYS-PROMPT is :sys keyword of cui block that will be placed as the first
  system message in chat.
 MAX-TOKENS is integer limit for LLM output.
 Return string or vector."
@@ -309,7 +309,7 @@ Return string or vector."
      noweb-control
      cui-restapi-links-only-last ; links-only-last
      nil ; not-clear-properties
-     nil ; ai-block-markers
+     nil ; cui-block-markers
      nil ; disable-tags
      req-type sys-prompt
      ;; max-tokens-string
@@ -333,7 +333,7 @@ Return list of strings to print."
                         noweb-control
                         nil ; links-only-last
                         nil ; not-clear-properties
-                        nil ; ai-block-markers
+                        nil ; cui-block-markers
                         nil ; disable-tags
                         req-type sys-prompt max-tokens-string)))) ; for else see :prompt
       (list
@@ -351,9 +351,9 @@ Return list of strings to print."
 			     :stream stream)))))
 
 (defun cui-expand-block (arg)
-  "Show a temp buffer with what the ai block expands to.
-If there is ai block at current position in current buffer.
-This is what will be sent to the api.  ELEMENT is the ai block.
+  "Show a temp buffer with what the cui block expands to.
+If there is cui block at current position in current buffer.
+This is what will be sent to the api.  ELEMENT is the cui block.
 Like `org-babel-expand-src-block'.
 Set `help-window-select' variable to to t to get focus.
 When universal  ARG specifide  output more  raw information  splitted by
@@ -458,14 +458,14 @@ SEEN is a list of commands already called, used to prevent recursion."
 
 ;; -=-= interactive fns: Org keys
 (defun cui-expand-block-org ()
-  "Show a temp buffer with what the ai block expands to."
+  "Show a temp buffer with what the cui block expands to."
   (interactive)
   (if (not (call-interactively #'cui-expand-block))
     ;; else
     (cui--call-next-key-remap-protected "C-c .")))
 
 (defun cui-set-max-tokens-org ()
-  "Jump to header of ai block and set max-tokens."
+  "Jump to header of cui block and set max-tokens."
   (interactive)
   (if (cui-block-p)
       (cui-block-set-block-parameter :max-tokens cui-restapi-default-max-tokens)
@@ -474,10 +474,10 @@ SEEN is a list of commands already called, used to prevent recursion."
 
 ;; -=-= interactive fns: Org keys remapings
 (defun cui-mark-at-point-org (&optional arg)
-  "Call `org-mark-element' if cant mark element of ai block.
-Works if cursor in ai block, otherwise call original function.
+  "Call `org-mark-element' if cant mark element of cui block.
+Works if cursor in cui block, otherwise call original function.
 Increase region at next execution.
-If optional argument ARG is non-nil, mark whole content of ai block."
+If optional argument ARG is non-nil, mark whole content of cui block."
   (interactive "P")
   (if (cui-block-p)
       (cui-block-mark-at-point arg)
@@ -485,9 +485,9 @@ If optional argument ARG is non-nil, mark whole content of ai block."
     (cui--call-next-remap-protected #'org-mark-element))) ; #'mark-paragraph
 
 (defun cui-fill-paragraph ()
-  "Call `org-fill-paragraph' to selected item in ai block.
+  "Call `org-fill-paragraph' to selected item in cui block.
 Universal interactive version of `cui-block-fill-paragraph'.
-Works if cursor in ai block.
+Works if cursor in cui block.
 If optional argument ARG is non-nil, mark current message of chat."
   (interactive)
   ;; (cui--debug "cui-fill-paragraph")
@@ -503,8 +503,8 @@ If optional argument ARG is non-nil, mark current message of chat."
 
 (defun cui-next-item (arg)
   "Call `org-next-visible-heading' or move to next ai item.
-Works if cursor in ai block.
-Item may be header of ai block, markdown
+Works if cursor in cui block.
+Item may be header of cui block, markdown
  ### header, markodown subblock, otherwise chat messages used as items.
 With ARG, repeats or can move backward if negative."
   (interactive "p")
@@ -518,8 +518,8 @@ With ARG, repeats or can move backward if negative."
 
 (defun cui-previous-item (arg)
   "Call `org-previous-visible-heading' or move to previous ai item.
-Works if cursor in ai block.
-Item may be header of ai block, markdown
+Works if cursor in cui block.
+Item may be header of cui block, markdown
  ### header, markodown subblock, otherwise chat messages used as items.
 ARG may be positive or nil."
   (interactive "p")
@@ -657,14 +657,15 @@ ORIG-FUN is `cui--org-babel-get-src-block-info-advice' and its ARGS."
           (font-lock-refresh-defaults))
         ;; - activate "ai" block in Org mode
         (when (and (boundp 'org-protecting-blocks) (listp org-protecting-blocks))
-          (add-to-list 'org-protecting-blocks "ai"))
+          (add-to-list 'org-protecting-blocks "ai")
+          (add-to-list 'org-protecting-blocks "cui"))
         (when (boundp 'org-structure-template-alist)
-          (add-to-list 'org-structure-template-alist '("A" . "ai")))
+          (add-to-list 'org-structure-template-alist '("A" . "cui")))
         ;; - Tangle: advice
         (advice-add 'org-babel-get-src-block-info :around #'cui--org-babel-get-src-block-info-advice)
         (advice-add 'org-babel-where-is-src-block-head :around #'cui--org-babel-where-is-src-block-head-advice)
         (add-to-list 'org-babel-tangle-lang-exts '("ai" . "ai")) ; language . ext
-        )
+        (add-to-list 'org-babel-tangle-lang-exts '("cui" . "cui")))
     ;; else - off
     (remove-hook 'org-ctrl-c-ctrl-c-hook #'cui-ctrl-c-ctrl-c 'local)
     (advice-remove 'keyboard-quit #'cui-keyboard-quit)
@@ -674,17 +675,21 @@ ORIG-FUN is `cui--org-babel-get-src-block-info-advice' and its ARGS."
     (font-lock-refresh-defaults)
     ;; tangle
     (advice-remove 'org-babel-get-src-block-info #'cui--org-babel-get-src-block-info-advice)
-    (advice-remove 'org-babel-where-is-src-block-head #'cui--org-babel-where-is-src-block-head-advice)))
+    (advice-remove 'org-babel-where-is-src-block-head #'cui--org-babel-where-is-src-block-head-advice)
+    (setq org-babel-tangle-lang-exts
+      (remove '("ai" . "ai") org-babel-tangle-lang-exts))
+    (setq org-babel-tangle-lang-exts
+      (remove '("cui" . "cui") org-babel-tangle-lang-exts))))
 
 (defun cui--get-buffers-for-element (&optional element)
-  "Simplify getting url buffers associated with ai block ELEMENT.
-Or for ai block at current position in current buffer.
+  "Simplify getting url buffers associated with cui block ELEMENT.
+Or for cui block at current position in current buffer.
 Used in `cui-open-request-buffer'."
   (when-let ((element (or element (cui-block-p))))
       (cui-timers--get-keys-for-variable (cui-block-get-header-marker element))))
 
 (defun cui-open-request-buffer ()
-  "Opens the url request buffer for ai block at current position."
+  "Opens the url request buffer for cui block at current position."
   (interactive)
   (if-let ((element (cui-block-p)))
       (if-let* ((url-buffer (car (cui--get-buffers-for-element element)))

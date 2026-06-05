@@ -73,7 +73,7 @@ Add to result of `cui-restapi--collect-chat-messages' CoT prompts.
 Compose IND request for COMMANDS and ind-1 response.
 MESSAGES is result of `cui-restapi-prepare-content'.
 IND count from 0.  RESP-QUEST  is list of string  of lengh IND+1  - raw
-content of ai block or answer from  LLM.  We assume that commands and AI
+content of cui block or answer from  LLM.  We assume that commands and AI
 answers except of the first one are already in MESSAGES."
   (let* ((recom (if (and cui-restapi-add-max-tokens-recommendation max-tokens)
                     (cui-restapi--get-length-recommendation max-tokens)))
@@ -97,7 +97,7 @@ answers except of the first one are already in MESSAGES."
 
 
 (defun cui-prompt-request-prepare-chain (&rest args)
-  "Check if there is :chain at ai block parameters and call chain function.
+  "Check if there is :chain at cui block parameters and call chain function.
 For assiging to `cui-agent-call-function' with all normal ARGS.
 Return t if we replace default call implementation
 `cui-restapi-request-prepare'."
@@ -111,7 +111,7 @@ Return t if we replace default call implementation
 Use `cui-prompt-chain-list'.
 Arguments
 - HEADER-MARKER is a result of `cui-block-get-header-marker' function
- for ai block.
+ for cui block.
 - NOWEB-CONTROL SYS-PROMPT MAX-TOKENS, explained in
  `cui-restapi-request-prepare' function."
   (let* ((messages (with-current-buffer (marker-buffer header-marker)
@@ -120,7 +120,7 @@ Arguments
                                                              noweb-control
                                                              nil ; links-only-last
                                                              nil ; not-clear-properties
-                                                             nil ; ai-block-markers
+                                                             nil ; cui-block-markers
                                                              nil ; disable-tags
                                                              'chat)))
          (messages (cui-prompt-collect-chat-research-steps-prompt cui-prompt-chain-list

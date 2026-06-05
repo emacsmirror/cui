@@ -70,7 +70,7 @@ Used for `cui-restapi-request-llm-retries' calling in `cui-prompt'."
 (defvar cui-timers--element-marker-variable-dict nil
   "Allow to store url buffer per block.
 Pairs of url-buffer (key) -> Header-marker (variable).
-So ai block may have several url-buffer running at the same time.
+So cui block may have several url-buffer running at the same time.
 Intented for usage with `cui-block--copy-header-marker' and keep pairs of
 \(url-retrieve buffero -> header marker).
 Should be used for interactive interrup of request only.
@@ -88,7 +88,7 @@ We use `eq' to find key which is buffer."
 
 (defun cui-timers--get-keys-for-variable (variable)
   "Return a list of keys.
-VARIABLE is header-marker or ai block.
+VARIABLE is header-marker or cui block.
 Return list of url-buffers.
 use `cui-timers--element-marker-variable-dict'."
   (seq-uniq (mapcar #'car

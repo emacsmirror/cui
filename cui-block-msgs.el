@@ -141,7 +141,7 @@ Return plist of message with :role and :content or nil if content is
   "Get list of messages for content between boundaries in current buffer.
 Positions CONTENT-START and CONTENT-END used as limits for parsing ai
 block, may be retrieved with :contents-begin and :contents-end
-properties of ai block Org element.
+properties of cui block Org element.
 Don't merge roles with `cui-block-msgs--merge-by-role'.
 Used in `cui-block-msgs--collect-chat-messages-at-point' is main function and
  `cui-block-msgs--collect-chat-messages-from-string' that used to split
@@ -222,13 +222,13 @@ Note: This function modifies the contents of the message plists in
 
 ;; persistant-sys-prompts
 (defun cui-block-msgs--collect-chat-messages-at-point (&optional element default-system-prompt max-token-recommendation not-merge first-chat-role separator)
-  "Collect messages for ai block at current positon.
+  "Collect messages for cui block at current positon.
 Execution in not `org-mode' is supported.
-Used for main ai block call.  Should not be used for sub-calls.
+Used for main cui block call.  Should not be used for sub-calls.
 Apply first step of chat messages preparation.
 Call `cui-block-parse-part-hook' for parts.
 For not `org-mode', content of whole buffer is used.
-Optional argument ELEMENT is AI block in current buffer.
+Optional argument ELEMENT is cui block in current buffer.
 Description for SEPARATOR at
  `cui-block-msgs--collect-chat-messages-from-buffer'.
 Optional argument FIRST-CHAT-ROLE may be used to change default \='user

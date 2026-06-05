@@ -105,7 +105,7 @@ Allow to simplify code by using many org-babel functions."
 
 (defun cui--progress-reporter-global-cancel (block-marker &optional failed)
   "Stop progress notification for element.
-BLOCK-MARKER is marker for ai block header from
+BLOCK-MARKER is marker for cui block header from
 `cui-block-get-header-marker'."
   (cui-block--set-variable :value nil :block-header-marker block-marker)
 
@@ -568,7 +568,7 @@ Argument STREAM not used."
         ;; else
 
 ;; (defun cui-block-next-element (&optional arg)
-;;   "Select next element of ai block or just jump.
+;;   "Select next element of cui block or just jump.
 ;; If optional argument ARG is non-nil, use default behavior to just jump.
 ;; Used with conjunction of `cui-block-mark-at-point' function.
 ;; If region is active and no ARG we select next element by selecting it as
@@ -593,27 +593,27 @@ Argument STREAM not used."
 ;;       (re-search-forward cui-block--chat-prefixes-re nil t)) ; todo limit current block
 ;;     ))
 
-;; -=-= interactive: next-ai-block
-(defvar cui-block-ai-block-regexp
+;; -=-= interactive: next-cui-block
+(defvar cui-block-cui-block-regexp
   (concat
-   "^#\\+begin_ai[^\n]*\n"
+   "^#\\+begin_cui[^\n]*\n"
    ;; (1) body
    "\\(\\(?:.\\|\n\\)*?\\)??[ \t\n]*#\\+end_ai")
-  "Regexp used to ai blocks or its body.
-Modified `org-babel-src-block-regexp' for `cui-block-next-ai-block'.")
+  "Regexp used to cui blocks or its body.
+Modified `org-babel-src-block-regexp' for `cui-block-next-cui-block'.")
 
-(defun cui-block-next-ai-block (&optional arg)
-  "Jump to the next ai block.
+(defun cui-block-next-cui-block (&optional arg)
+  "Jump to the next cui block.
 Like `org-babel-next-src-block'.
 With optional prefix argument ARG, jump forward ARG many source blocks."
   (interactive "p")
-  (org-next-block arg nil cui-block-ai-block-regexp))
+  (org-next-block arg nil cui-block-cui-block-regexp))
 
-(defun cui-block-previous-ai-block (&optional arg)
-  "Jump to the previous ai block.
+(defun cui-block-previous-cui-block (&optional arg)
+  "Jump to the previous cui block.
 With optional prefix argument ARG, jump backward ARG many source blocks."
   (interactive "p")
-  (org-previous-block arg cui-block-ai-block-regexp))
+  (org-previous-block arg cui-block-cui-block-regexp))
 
   ;; replaced by cui-block--pos-in-markdown-block-p
 ;; (defun cui-block--markdown-area (pos limit-begin limit-end)
@@ -623,7 +623,7 @@ With optional prefix argument ARG, jump backward ARG many source blocks."
 ;; specified.  Used in `cui-block-mark-at-point'.
 ;; If there is two markdown begining with language we treat second as
 ;; inside of first.
-;; Argument LIMIT-BEGIN LIMIT-END are positions ai block header and footer."
+;; Argument LIMIT-BEGIN LIMIT-END are positions cui block header and footer."
 ;;   (cui--debug "cui-block--markdown-area %s %s %s" pos limit-begin limit-end)
 ;;   ;; fix limits
 ;;   (when (and limit-begin (< pos limit-begin))
@@ -668,7 +668,7 @@ With optional prefix argument ARG, jump backward ARG many source blocks."
 ;; (defun cui-block--markdown-lang-area (pos limit-beg limit-end)
 ;;   "Return (begin end) of markdown language block.
 ;; If POS in it.
-;; Optional argument LIM-BEG is ai block begining position.
+;; Optional argument LIM-BEG is cui block begining position.
 ;; Return t if pos in markdown block, table or quote.
 ;; Side-effect: set pointer position to POS."
 ;;   (goto-char pos)
@@ -716,7 +716,7 @@ With optional prefix argument ARG, jump backward ARG many source blocks."
 
 ;; replaced by `cui-block--collect-chat-messages-at-point'
 ;; (defun cui-restapi--collect-chat-messages-at-point (&optional element default-system-prompt persistant-sys-prompts max-token-recommendation separator)
-;;   "Get messsages for ai block at point or element in current buffer.
+;;   "Get messsages for cui block at point or element in current buffer.
 ;; Replacement Links, remove text properties, split to messages.
 ;; ELEMENT is the element of the special block.
 ;; Description for DEFAULT-SYSTEM-PROMPT PERSISTANT-SYS-PROMPTS
@@ -941,7 +941,7 @@ let block with body."
 
 
 ;; (defun cui-parse-org-header ()
-;;   "Parsing ai block header and parameters.
+;;   "Parsing cui block header and parameters.
 ;; Result of this function passed to `cui-req-type-functions'.
 ;; Return list of arguments args."
 ;;   (let* ((element (cui-block-p)) ; cui-block.el
@@ -964,7 +964,7 @@ let block with body."
 ;;                             (stream t :type bool))
 ;;                            ;; body
 ;;                            (unless model
-;;                              (user-error "Model not specified nor in ai block nor in cui-restapi-con-model.  To disable model completely set it to \"nil\""))
+;;                              (user-error "Model not specified nor in cui block nor in cui-restapi-con-model.  To disable model completely set it to \"nil\""))
 ;;                            (when (string-equal-ignore-case model "nil")
 ;;                              (setq model nil)) ; if specified as "nil" string explicitly, to disable.
 ;;                            ;; return to call `cui-request-prepare' or other
@@ -976,7 +976,7 @@ let block with body."
   "Test when all parameters are provided in the block header (info alist)."
   (with-temp-buffer
     (org-mode)
-    (let* ((test-block "#+begin_ai :stream t :stream1 t :sys \"A helpful LLM.\" :stream2 :max-tokens 50 :max-tokens2 :model \"gpt-3.5-turbo\" :model1 :model2 t :model3 :temperature 0.7\n#+end_ai\n")
+    (let* ((test-block "#+begin_cui :stream t :stream1 t :sys \"A helpful LLM.\" :stream2 :max-tokens 50 :max-tokens2 :model \"gpt-3.5-turbo\" :model1 :model2 t :model3 :temperature 0.7\n#+end_ai\n")
            (element (cui-test-setup-buffer test-block))
            (info (progn (goto-char (org-element-property :begin element)) (cui-block-get-info))))
       ;; (unwind-protect

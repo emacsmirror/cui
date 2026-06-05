@@ -71,7 +71,7 @@
 ;;           (insert (format "#+PROPERTY: %s %s\n" (car prop) (cdr prop)))))
 ;;       (insert block-content)
 ;;       (goto-char (point-min))
-;;       ;; Move point to the start of the AI block to ensure `org-element-at-point` works
+;;       ;; Move point to the start of the cui block to ensure `org-element-at-point` works
 ;;       ;; and `org-entry-get-with-inheritance` can find properties.
 ;;       (search-forward "#+begin_ai")
 ;;       (let* ((element (org-element-at-point))
@@ -80,7 +80,7 @@
 ;;         element))))
 
 (defun cui-test-setup-buffer (block-content &optional buf properties-alist)
-  "Create ai BLOCK-CONTENT and optional PROPERTIES-ALIST.
+  "Create cui block-CONTENT and optional PROPERTIES-ALIST.
 In current buffer or in BUF.
 PROPERTIES-ALIST should be an alist like ((property-name . \"value\")).
 Set cursor at begining of buffer.
@@ -96,7 +96,7 @@ and INFO-ALIST is the parameters from its header."
     ;; Check if #+begin_ai exists to avoid search failure
     (unless (string-match-p "#\\+begin_ai" block-content)
       (error "Test setup failed: block-content does not contain '#+begin_ai'"))
-    ;; Move point to the start of the AI block
+    ;; Move point to the start of the cui block
     (unless (search-forward "#+begin_ai" nil t)
       (error "Failed to find '#+begin_ai' in buffer"))
     (beginning-of-line) ; Ensure point is at the start of the block

@@ -1,4 +1,4 @@
-;;; cui-block-tags.el --- Handling links inside ai block  -*- lexical-binding: t; -*-
+;;; cui-block-tags.el --- Handling links inside cui block  -*- lexical-binding: t; -*-
 
 ;; Copyright (C) 2025 github.com/Anoncheg1
 ;; Author: <github.com/Anoncheg1,codeberg.org/Anoncheg>
@@ -30,7 +30,7 @@
 ;
 ;; Main functions:
 ;; - `cui-block-tags-replace' is main function for replace links.
-;; - `cui-block-tags-get-content-ai-messages' is used to prepare ai block for request
+;; - `cui-block-tags-get-content-ai-messages' is used to prepare cui block for request
 ;; - `cui-block-tags-get-content' is used to get content for by links, tags or noweb
 
 ;; How this works?
@@ -102,7 +102,7 @@ Used to set `org-link-search-must-match-exact-headline' before
   :group 'cui)
 
 (defcustom cui-block-tags-check-double-targets-found-flag t
-  "Non-nil means signal error if link in ai block point to targets in same file."
+  "Non-nil means signal error if link in cui block point to targets in same file."
   :type 'boolean
   :group 'cui)
 
@@ -271,7 +271,7 @@ Optional arguments:
 - HEADER added after first chat prefix or just at the begining if
  CONTENT dont starts with chat prefix.
 To detect LANG use `cui-block-tags--filepath-to-language'.
-- INNER, is used for special case to insert ai block without wrapping.
+- INNER, is used for special case to insert cui block without wrapping.
 Return string."
   (cui--debug "cui-block-tags--compose-m-block N1 inner=%s lang=%s header=%s" inner lang header)
   (cui--debug "cui-block-tags--compose-m-block N2" content)
@@ -452,7 +452,7 @@ Optional argument ELEMENT is any Org element."
 
 (defun cui-block-tags--contents-area (&optional element)
   "Return cons with start and end position of content.
-Works for ai blocks ELEMENT and supported Org block
+Works for cui blocks ELEMENT and supported Org block
  `cui-block-tags-org-blocks-types'.
 Start and first line after header, end at of line of the first not empty
  line before footer."
@@ -466,8 +466,8 @@ Start and first line after header, end at of line of the first not empty
 
 ;; -=-= functions: get-content, get-content-ai-messages
 ;; sys-prompt-for-all-messages
-(defun cui-block-tags-get-content-ai-messages (&optional element noweb-control links-only-last not-clear-properties ai-block-markers disable-tags req-type sys-prompt max-tokens-string)
-  "Get content of ai block with expansion of links and cleaning.
+(defun cui-block-tags-get-content-ai-messages (&optional element noweb-control links-only-last not-clear-properties cui-block-markers disable-tags req-type sys-prompt max-tokens-string)
+  "Get content of cui block with expansion of links and cleaning.
 Execution in not `org-mode' is supported.
 Same to `cui-restapi-prepare-content'
 Do: expand tags and links, expand noweb, clear properties and trim.
@@ -479,24 +479,24 @@ Optional arguments ELEMENT LINKS-ONLY-LAST
  MAX-TOKENS documented at `cui-block-tags-get-content'.
 If DISABLE-TAGS boolen flag is non-nil, links will not be expanded, it
  is like inverse NOWEB-CONTROL.
-Optional argument AI-BLOCK-MARKERS is a list of header markers created
+Optional argument CUI-BLOCK-MARKERS is a list of header markers created
  with `cui-block-get-header-marker', used to check that target of link
  or noweb reference don't point to current block to prevent recursion,
  also used in `cui-block-tags-replace'.
 MAX-TOKENS-STRING is string.
-Return vector with messages for ai block, or string if REQ-TYPE is
+Return vector with messages for cui block, or string if REQ-TYPE is
  compeltion or nil if loop."
-  (cui--debug "cui-block-tags-get-content-ai-messages N1 %s %s %s" noweb-control links-only-last not-clear-properties ai-block-markers)
+  (cui--debug "cui-block-tags-get-content-ai-messages N1 %s %s %s" noweb-control links-only-last not-clear-properties cui-block-markers)
   (let ((current-block-marker (cui-block-get-header-marker element)))
-    (unless (member current-block-marker ai-block-markers)
+    (unless (member current-block-marker cui-block-markers)
       ;; add to block to list of markers to prevent loop
-      (push current-block-marker ai-block-markers)
-      (cui--debug "cui-block-tags-get-content-ai-messages N2 %s %s %s" noweb-control disable-tags ai-block-markers)
+      (push current-block-marker cui-block-markers)
+      (cui--debug "cui-block-tags-get-content-ai-messages N2 %s %s %s" noweb-control disable-tags cui-block-markers)
       (if (eql req-type 'completion)
           ;; - *Completion*
           (let* ((str (cui-block-get-content element noweb-control)) ; legacy: may be executed in `org-mode' only
                  (str (if noweb-control
-                          (cui-block-tags-replace str ai-block-markers)
+                          (cui-block-tags-replace str cui-block-markers)
                         ;; else
                         str))
                  (str (cui-block-tags--clear-properties str)))
@@ -529,13 +529,13 @@ Return vector with messages for ai block, or string if REQ-TYPE is
                                  (cui-block-msgs--modify-vector-last-user-content messages
                                                                                #'cui-block-tags-replace
                                                                                cui-block-tags-tagslinks-split-messages
-                                                                               ai-block-markers)
+                                                                               cui-block-markers)
                                ;; else
                                (cui-block-msgs--modify-vector-content messages
                                                                    #'cui-block-tags-replace
                                                                    'user
                                                                    cui-block-tags-tagslinks-split-messages
-                                                                   ai-block-markers))
+                                                                   cui-block-markers))
                            ;; else
                            messages))
                (_ (cui--debug "cui-block-tags-get-content-ai-messages N2_2" messages))
@@ -557,23 +557,23 @@ Return vector with messages for ai block, or string if REQ-TYPE is
 ;;  cui-block-tags--get-content-at-point-org
 ;;  cui-block-tags--get-content-org-block-at-point -> cui-block-tags-get-content - check target of link and source block
 
-;; To prevent loop we accept `ai-block-markers' argument for both
+;; To prevent loop we accept `cui-block-markers' argument for both
 ;; functions and pass it through the chain to compare target of link
-;; with `ai-block-markers' before calling
+;; with `cui-block-markers' before calling
 ;; `cui-block-tags-get-content' `cui-block-tags-replace'.
 ;; old: sys-prompt-for-all-messages
-(defun cui-block-tags-get-content (&optional element noweb-control links-only-last not-clear-properties ai-block-markers disable-tags req-type sys-prompt max-tokens-string)
+(defun cui-block-tags-get-content (&optional element noweb-control links-only-last not-clear-properties cui-block-markers disable-tags req-type sys-prompt max-tokens-string)
   "Get content of supported blocks in current position in current buffer.
 With properly expansion of tags, links and noweb references.
 For evaluation, tangling, or exporting.
-For ai block we replace links and tags in last user message only.
+For cui block we replace links and tags in last user message only.
 it should point to element
 Optional arguments:
-AI-BLOCK-MARKERS is a list of header markers created with
+CUI-BLOCK-MARKERS is a list of header markers created with
  `cui-block-get-header-marker', used to check that target of link or
  noweb reference don't point to current block to prevent recursion, also
  used in `cui-block-tags-replace'.
-If current block already in AI-BLOCK-MARKERS, tags and noweb links are
+If current block already in CUI-BLOCK-MARKERS, tags and noweb links are
  not expanded.
 ELEMENT is Org block.  If provided, point may be not at element.
 If NOWEB-CONTROL boolean, if non-nil, expand noweb links and links in
@@ -586,7 +586,7 @@ Called from `cui-expand-block', goint to use it everywhere.
 REQ-TYPE SYS-PROMPT MAX-TOKENS
  arguments documented in `cui-restapi-request-prepare'.
 Return string with expanded content."
-  (cui--debug "cui-block-tags-get-content N1 %s" ai-block-markers)
+  (cui--debug "cui-block-tags-get-content N1 %s" cui-block-markers)
   (when-let* ((element (or element (cui-block-p) (cui-block-tags--block-at-point))))
     ;; (let (
     ;;       (max-tokens-string
@@ -598,7 +598,7 @@ Return string with expanded content."
      ((string-equal "ai" (org-element-property :type element))
       (string-trim
        (cui-block-msgs--stringify-chat-messages
-        (cui-block-tags-get-content-ai-messages element noweb-control links-only-last not-clear-properties ai-block-markers disable-tags req-type sys-prompt max-tokens-string))))
+        (cui-block-tags-get-content-ai-messages element noweb-control links-only-last not-clear-properties cui-block-markers disable-tags req-type sys-prompt max-tokens-string))))
 
      ((eq (org-element-type element) 'src-block)
       (goto-char (org-element-property :begin element))
@@ -667,26 +667,26 @@ Return list range if POS (an index) is inside a '```' code block in STR,
 
 ;; -=-= help functions: get content for blocks
 
-(defun cui-block-tags--get-content-org-block-at-point (&optional element ai-block-markers inner)
+(defun cui-block-tags--get-content-org-block-at-point (&optional element cui-block-markers inner)
   "Return markdown block for supported Org blocks at current position.
 Works only supported blocks in `cui-block-tags-org-blocks-types' and ai
  block.
-ai block handled specially in cui-block-tags--compose-m-block'.
+cui block handled specially in cui-block-tags--compose-m-block'.
 Move pointer to the end of block.
 
 Optional argiments:
-- ELEMENT is ai block.
-- AI-BLOCK-MARKERS used to prevent loop by coparing with ELEMENT at
+- ELEMENT is cui block.
+- CUI-BLOCK-MARKERS used to prevent loop by coparing with ELEMENT at
  current position.
-- INNER, if non-nil, ai block wrapped in markdown.
+- INNER, if non-nil, cui block wrapped in markdown.
 Return full content of block or nil."
   ;; 1) enshure that we are inside some Org block
-  (cui--debug "cui-block-tags--get-content-org-block-at-point %s" inner ai-block-markers)
+  (cui--debug "cui-block-tags--get-content-org-block-at-point %s" inner cui-block-markers)
   (when-let ((element (or element (cui-block-tags--block-at-point))))
     ;; (cui--debug "cui-block-tags--get-content-org-block-at-point3 %s" tags-control)
     (cui-block-tags--compose-m-block
      ;; content
-     (cui-block-tags-get-content element nil nil nil ai-block-markers) ; may cause recursion
+     (cui-block-tags-get-content element nil nil nil cui-block-markers) ; may cause recursion
      :lang (if (eq (org-element-type element) 'src-block)
                (org-element-property :language element)
              ;; else
@@ -727,11 +727,11 @@ Return non-nil string of markdown block with header if exist at current
                                        (line-end-position))))
         (string-trim-left (buffer-substring-no-properties beg end))))))
 
-(defun cui-block-tags--get-content-chat-message-at-point (&optional ai-block-markers)
+(defun cui-block-tags--get-content-chat-message-at-point (&optional cui-block-markers)
   "Get chat message at point, if pointer at message prefix.
 Execution in not `org-mode' is supported.
 Move pointer.
-Optional argument AI-BLOCK-MARKERS explained in
+Optional argument CUI-BLOCK-MARKERS explained in
  `cui-block-tags-get-content'.
 Return string or nil."
   (beginning-of-line)
@@ -747,13 +747,13 @@ Return string or nil."
                 (result (string-trim-right (buffer-substring-no-properties beg end))))
       ;; noweb and links
       (let* ((current-block-marker (cui-block-get-header-marker))
-             (tags-control (not (member current-block-marker ai-block-markers))))
-        (push current-block-marker ai-block-markers)
+             (tags-control (not (member current-block-marker cui-block-markers))))
+        (push current-block-marker cui-block-markers)
         (if tags-control
-            (cui-block-tags-replace result ai-block-markers)
+            (cui-block-tags-replace result cui-block-markers)
           ;; else
           result)
-        ;; ;; else - whole ai block
+        ;; ;; else - whole cui block
         ;; (cui-block-tags--get-content-org-block-at-point element source-block-marker))
         ))))
 
@@ -788,7 +788,7 @@ Handles symlinks, remote files (TRAMP), and buffers without files."
         (string= buffer-file input-file)))))
 
 
-(defun cui-block-tags--get-content-at-point-not-org (&optional ai-block-markers)
+(defun cui-block-tags--get-content-at-point-not-org (&optional cui-block-markers)
   "Return prepared block at current POS position.
 Works with outline, programming, text buffers.
 1) Use `beginning-of-defun' for programming mode
@@ -796,7 +796,7 @@ Works with outline, programming, text buffers.
 3) AI file - if at message prefix.
 4) Use `paragraph-separate' variable.
 POS should be at begining of the line.
-Optional argument AI-BLOCK-MARKERS explained in
+Optional argument CUI-BLOCK-MARKERS explained in
  `cui-block-tags-get-content'.
 Return string or nil."
   (cui--debug "cui-block-tags--get-content-at-point-not-org")
@@ -839,7 +839,7 @@ Return string or nil."
    ((and (string-equal "ai" (cui-block-tags--filepath-to-language (buffer-file-name)))
 
          (or (save-excursion (cui-block-tags--get-m-block-at-point))
-             (cui-block-tags--get-content-chat-message-at-point ai-block-markers))))
+             (cui-block-tags--get-content-chat-message-at-point cui-block-markers))))
 
    ;; 4) paragraph
    ;; ((and paragraph-separate
@@ -858,14 +858,14 @@ Return string or nil."
    (t
     (user-error "No outline, function, ai message or markdown block was found to get a block"))))
 
-(defun cui-block-tags--get-content-at-point-org (&optional ai-block-markers)
+(defun cui-block-tags--get-content-at-point-org (&optional cui-block-markers)
   "Prepare block for LLM of Org element at current position.
-Optional AI-BLOCK-MARKERS argument used to prevent loop.
+Optional CUI-BLOCK-MARKERS argument used to prevent loop.
 Cursor position may be not at the begining of the line for
  `cui-block-tags--get-m-block-at-point'.
 Return string or nil."
   (let* ((element (or (cui-block-tags--block-at-point) (org-element-context)))
-         (type (org-element-type element))) ; Org block or ai block or some element (not in block)
+         (type (org-element-type element))) ; Org block or cui block or some element (not in block)
     (cui--debug "cui-block-tags--get-content-at-point-org type %s" type (- (point) (line-beginning-position)))
     ;; - (1) case - headline
     (cond
@@ -880,7 +880,7 @@ Return string or nil."
         (while (< (point) (org-element-property :end element))
           ;; supported sub-elements: headline, blocks
           ;; we add new line at begining of every "push"
-          (setq el (org-element-context)) ; may be ai block
+          (setq el (org-element-context)) ; may be cui block
           (setq type (org-element-type el))
 
           (push (cond
@@ -894,7 +894,7 @@ Return string or nil."
                  ;; 1. Sub: Block
                  ((member type  cui-block-tags-org-blocks-types)
                   (concat "\n"
-                  (prog1 (cui-block-tags--get-content-org-block-at-point el ai-block-markers t) ; noweb issue
+                  (prog1 (cui-block-tags--get-content-org-block-at-point el cui-block-markers t) ; noweb issue
                      ;; MOVE!
                     (org-forward-element))))
 
@@ -914,7 +914,7 @@ Return string or nil."
      ;; - (3) case - at chat message prefix
      ((and (cui-block-p element)
            (unwind-protect
-               (cui-block-tags--get-content-chat-message-at-point ai-block-markers)
+               (cui-block-tags--get-content-chat-message-at-point cui-block-markers)
              (cui--debug "cui-block-tags--get-content-at-point-org (3) case"))))
      ;; - (4) case - Org Block - at begining
      ((and (member type cui-block-tags-org-blocks-types)
@@ -924,53 +924,53 @@ Return string or nil."
                (or
                 (looking-at "[ \t]*#\\+BEGIN_\\(\\S-+\\)")
                 (looking-at org-babel-src-name-regexp)))))
-      (cui--debug "cui-block-tags--get-content-at-point-org (4) case %s" (point) type ai-block-markers)
-      (cui-block-tags--get-content-org-block-at-point element ai-block-markers)) ; noweb issue
+      (cui--debug "cui-block-tags--get-content-at-point-org (4) case %s" (point) type cui-block-markers)
+      (cui-block-tags--get-content-org-block-at-point element cui-block-markers)) ; noweb issue
      ;; - (5) case - #+name: without block
      ((and (eq type 'keyword)
            (looking-at org-babel-src-name-regexp))
       (user-error "Reference to #+name: \"%s\" without actual block" (org-element-property :value element )))
      ;; - (6) case - Org element with :end
      ;; ((when-let ((end (org-element-property :end element))) ; safe
-     ;;    (cui--debug "cui-block-tags--get-content-at-point-org (6) case %s" (point) type end ai-block-markers)
+     ;;    (cui--debug "cui-block-tags--get-content-at-point-org (6) case %s" (point) type end cui-block-markers)
      ;;    (cui-block-tags--compose-m-block (buffer-substring-no-properties (line-beginning-position) end))))
 
      (t
       (user-error "Cant get content at point for link in Org buffer")))))
 
-(defun cui-block-tags--get-content-at-point (&optional ai-block-markers)
+(defun cui-block-tags--get-content-at-point (&optional cui-block-markers)
   "Get prepared block at current position.
 Support any mode buffers.  Here code for Org mode.
 If at current position there is a Org block or markdown block
 Return markdown block for LLM for current element at current position.
 May return nil.
 For Org buffer only.
-Optional AI-BLOCK-MARKERS argument used to prevent loop.
+Optional CUI-BLOCK-MARKERS argument used to prevent loop.
 Supported: blocks and headers.
 - Org header - loop over elements and convert to markdown
 - at markdown block header or inside markdown block
 - at src header or inside src block
 Move pointer to the end of block.
 Return string or nil"
-  (cui--debug "cui-block-tags--get-content-at-point %s" ai-block-markers)
+  (cui--debug "cui-block-tags--get-content-at-point %s" cui-block-markers)
   (if (not (derived-mode-p 'org-mode))
-      (cui-block-tags--get-content-at-point-not-org ai-block-markers)
+      (cui-block-tags--get-content-at-point-not-org cui-block-markers)
     ;; else - Org mode
-    (cui-block-tags--get-content-at-point-org ai-block-markers)))
+    (cui-block-tags--get-content-at-point-org cui-block-markers)))
 
 
 ;; (featurep 'org-links)
 (declare-function org-links--local-get-target-position-for-link "org-links")
 
 ;; (when (require 'org-links nil 'noerror)
-(defun cui-block-tags--get-org-links-content (link &optional ai-block-markers)
+(defun cui-block-tags--get-org-links-content (link &optional cui-block-markers)
   "In current buffer search for LINK and get content at position.
 Works for any mode.
 Support for `org-links' package with additional links types.
 Headlines not wrapped in markdown blocks.
 LINK is string in format is what inside [[...]] or Plain link.
 Target may be not in Org buffer.
-Optional AI-BLOCK-MARKERS argument used to prevent loop.
+Optional CUI-BLOCK-MARKERS argument used to prevent loop.
 Return string or nil."
   ;; (require 'org-links)
   (cui--debug "cui-block-tags--get-org-links-content N1 %s " link)
@@ -995,7 +995,7 @@ Return string or nil."
               (save-excursion
                 (cui--debug "cui-block-tags--get-org-links-content N4 %s" pos1)
                 (goto-char pos1)
-                (cui-block-tags--get-content-at-point ai-block-markers))
+                (cui-block-tags--get-content-at-point cui-block-markers))
             (user-error "In link %s of NUM format was not possible to find first position in buffer %s" link (current-buffer)))))
     ;; else - not org-links type link.
     nil))
@@ -1057,7 +1057,7 @@ Return string."
         val))))     ; disallow decimals
 
 
-(defun cui-block-tags--get-replacement-for-org-link (link-string &optional ai-block-markers)
+(defun cui-block-tags--get-replacement-for-org-link (link-string &optional cui-block-markers)
   "Return string that explain LINK-STRING for LLM or nil.
 Supported targets:
 - Org block in current buffer \"file:\"
@@ -1069,7 +1069,7 @@ if two targets found.
 Uses `cui-block--block-header-marker' variable to check that target of
 link or noweb reference don't point to current block to prevent
 recursion, created with `cui-block-get-header-marker'.
-Optional AI-BLOCK-MARKERS argument used to prevent loop.
+Optional CUI-BLOCK-MARKERS argument used to prevent loop.
 Return replacement string or nil."
   ;; Some code was taken from:
   ;; `org-link-open' for type and opening,  `org-link-search' for search in current buffer.
@@ -1107,9 +1107,9 @@ Return replacement string or nil."
                (if (cui-block-tags--path-is-current-buffer-p path)
                    (if-let ((num (cui-block-tags--string-is-integer option)))
                        ;; case 2) PATH::NUM
-                       (progn (org-goto-line num) (cui-block-tags--get-content-at-point ai-block-markers))
+                       (progn (org-goto-line num) (cui-block-tags--get-content-at-point cui-block-markers))
                      ;; else case 3) *recursion call*! without path
-                     (cui-block-tags--get-replacement-for-org-link  (org-link-make-string option) ai-block-markers)) ; recursive call
+                     (cui-block-tags--get-replacement-for-org-link  (org-link-make-string option) cui-block-markers)) ; recursive call
                  ;; - else case 4) <other-file> - *recursive call*!
                  (cui-block-tags--get-replacement-for-org-file-link-in-other-file path option))
              ;; else case 1) - no ::, only path
@@ -1126,7 +1126,7 @@ Return replacement string or nil."
              (when (and (featurep 'org-links) ;; (require 'org-links nil 'noerror)
                         (string-equal type "fuzzy"))
                (cui-block-tags--get-org-links-content (org-element-property :raw-link link-el)
-                                                      ai-block-markers)) ; NUM-NUM
+                                                      cui-block-markers)) ; NUM-NUM
              ;; 0) search with `org-link-search' and get content with `cui-block-tags--get-content-at-point'
              (let ((ln-before (line-number-at-pos)))
                (let (
@@ -1158,7 +1158,7 @@ Return replacement string or nil."
                  ;; - 4) Move to position of target position
                  (goto-char target-pos)
                  ;; - 5) `cui-block-tags--get-content-at-point'
-                 (cui-block-tags--get-content-at-point ai-block-markers)))))))))))
+                 (cui-block-tags--get-content-at-point cui-block-markers)))))))))))
 
 ;; -=-= help functions: markdown blocks
 
@@ -1234,7 +1234,7 @@ found."
         nil))))
 
 
-(defun cui-block-tags-replace (string &optional ai-block-markers)
+(defun cui-block-tags-replace (string &optional cui-block-markers)
   "Replace links in STRING with their targets.
 Check every type of links if it exist in text, find replacement for the
 fist link and replace link substring with
@@ -1247,7 +1247,7 @@ Called from:
 - `cui-expand-block' interactive function
 - `cui-restapi-request-prepare'
 - `cui-restapi-request-llm-retries'.
-Optional AI-BLOCK-MARKERS argument used to prevent loop.
+Optional CUI-BLOCK-MARKERS argument used to prevent loop.
 Return modified string with text properties or the same string
 or vector if content have links to images."
   (cui--debug "cui-block-tags-replace N0 %s" string)
@@ -1319,7 +1319,7 @@ or vector if content have links to images."
       (let* ((link (car match))
              (pos (cdr match))
              (end (+ pos (length link)))
-             (replacement (cui-block-tags--get-replacement-for-org-link link ai-block-markers))
+             (replacement (cui-block-tags--get-replacement-for-org-link link cui-block-markers))
              (replacement (concat replacement "\n")))
         ;; Replace in the string
         (setq string (concat
@@ -1362,21 +1362,21 @@ Return modified string of STRING-OR-LIST or :text."
 ;; -=-= Fontify @Backtrace & @path & [[links]]
 
 (defun cui-block-tags--font-lock-fontify-links (limit)
-  "Fontify Org links in #+begin_ai ... #+end_ai blocks, up to LIMIT.
+  "Fontify Org links in #+begin_cui ... #+end_cui blocks, up to LIMIT.
 This is special fontify function, that return t when match found.
-1) search for ai block begin and then end, 2) call fontify on range that
+1) search for cui block begin and then end, 2) call fontify on range that
 goto to the begining firstly function `org-activate-links' used to
 highlight any link.
 TODO: maybe we should use something like
 `cui-block-tags--markdown-block-string-p'"
   (let ((case-fold-search t)
         ret)
-    ;; - loop per ai block
-    (while (and (re-search-forward cui-block--ai-block-begin-re limit t)
+    ;; - loop per cui block
+    (while (and (re-search-forward cui-block--cui-block-begin-re limit t)
                 (< (point) limit))
       (let ((beg (match-end 0))
             end lbeg lend)
-        (if (re-search-forward cui-block--ai-block-end-re limit t)
+        (if (re-search-forward cui-block--cui-block-end-re limit t)
             (setq end (match-beginning 0))
           ;; else
           (setq end limit))

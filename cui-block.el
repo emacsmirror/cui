@@ -23,7 +23,7 @@
 
 ;;; Commentary:
 
-;; Defines functions for dealing with ai block as Org special-block
+;; Defines functions for dealing with cui block as Org special-block
 
 ;; None Org babel: We choose not to fake as babel source block and use
 ;; functionality because it require too much advices.
@@ -114,7 +114,7 @@ Arguments: type, role-text, pos, buffer
 
 
 (defcustom cui-block-parse-part-hook nil
-  "Run before request preparation after splitting ai block to chat messages.
+  "Run before request preparation after splitting cui block to chat messages.
 Call hook function with raw string of current block after role prefix.
  Implemented as a list of functions that called with two argument
  content string after prefix and role prefix as a symbol from from
@@ -130,7 +130,7 @@ Call hook function with raw string of current block after role prefix.
 
 (defcustom cui-block-fill-function #'cui-block-fill-insert
   "If non-nil this function will be called after insertion of text.
-Current buffer is buffer with ai block with position of pointer right
+Current buffer is buffer with cui block with position of pointer right
 after insertion of text.
 Accept parameters: POS before insertion and and STREAM boolean flag.
 Should check that position is not inside markdown block
@@ -211,9 +211,9 @@ In `cui-block-roles-prefixes'.")
 ;;   (or (cdr (assoc-string role cui-block-roles-prefixes)) ; Get value by key
 ;;       cui-block-roles-prefixes-unknown)) ; => assistant
 
-(defconst cui-block--ai-block-begin-re "^[ \t]*#\\+begin_ai.*$")
-(defconst cui-block--ai-block-end-re "^[ \t]*#\\+end_ai.*$")
-(defconst cui-block--ai-block-begin-end-re "^[ \t]*#\\+\\(begin\\|end\\)_ai.*$")
+(defconst cui-block--cui-block-begin-re "^[ \t]*#\\+begin_\\(ai\\|cui\\).*$")
+(defconst cui-block--cui-block-end-re "^[ \t]*#\\+end_\\(ai\\|cui\\).*$")
+(defconst cui-block--cui-block-begin-end-re "^[ \t]*#\\+\\(begin\\|end\\)_\\(ai\\|cui\\).*$")
 ;; org-babel-src-name-regexp)
 (defvar cui-block--markdown-begin-re "^\\s-*```\\([^\s\t\n[{]+\\)[\s\t]*$")
 (defvar cui-block--markdown-end-re "^[\s\t]**```[\s\t]*$")
@@ -243,31 +243,33 @@ You can customize this font with `set-face-attribute'."
 
 
 (defun cui-block-p (&optional element)
-  "Check if point at ai block or ELEMENT is ai block if provided.
+  "Check if point at cui block or ELEMENT is cui block if provided.
 Optional argument ELEMENT is returned by `org-element-at-point', when
- non-nil, checked if it is ai block, if not nil is retuned.
+ non-nil, checked if it is cui block, if not nil is retuned.
 If ELEMENT is not provider, current position in buffer used to get ai
  block.
-Raise error if ELEMENT is not ai block or there is no ai block at
+Raise error if ELEMENT is not cui block or there is no cui block at
  current position.
 Like `org-in-src-block-p'.
 Return element or nil."
   (if (and element
-           (string-equal "ai" (org-element-property :type element)))
+           (or (string-equal "ai" (org-element-property :type element))
+               (string-equal "cui" (org-element-property :type element))))
       element
     ;; else
     ;; (cui-block--org-element-with-disabled-cache ;; with cache enabled we get weird Cached element is incorrect warnings
     ;; (let* ((org-element-use-cache nil)
     (org-element-with-disabled-cache
       (let ((sel (org-element-lineage
-                 (save-match-data (org-element-context)) (list 'special-block) t)))
-      (when (and sel (string-equal "ai" (org-element-property :type sel)))
-        sel)))))
+                  (save-match-data (org-element-context)) (list 'special-block) t)))
+        (when (and sel (or (string-equal "ai" (org-element-property :type sel))
+                           (string-equal "cui" (org-element-property :type sel))))
+          sel)))))
 
 
 ;; -=-= info fn: get-info, get-request-type, get-sys
 (defun cui-block-get-info (&optional element no-eval)
-  "Parse the header of ai block.
+  "Parse the header of cui block.
 ELEMENT is the element of the special block.
 Like `org-babel-get-src-block-info' but instead of list return only
 arguments.
@@ -283,7 +285,7 @@ Return an alist of key-value pairs."
 
 
 (defun cui-block--get-request-type (info)
-  "Look at the header of ai block.
+  "Look at the header of cui block.
 returns the type of request.  INFO is the alist of key-value
   pairs from `cui-block-get-info'."
   ; (alist-get :chat info 'x) - return x if  there is no :chat, if present return string or number value or nil if no value
@@ -294,7 +296,7 @@ returns the type of request.  INFO is the alist of key-value
    (t 'chat)))
 
 (cl-defun cui-block--get-sys (&key info default)
-  "Check if :sys exist in #+begin_ai parameters.
+  "Check if :sys exist in #+begin_cui parameters.
 If exist return nil or string, if not exist  return `default'.
 Argument INFO is the alist of key-value pairs from `cui-block-get-info'.
 DEFAULT is a string with default system prompt for LLM."
@@ -421,11 +423,11 @@ Used as argument for `cui-block-msgs--modify-vector-last-user-content' and
 
 
 (defun cui-block--contents-region (&optional element)
-  "Return cons with start and end position of ai block content.
+  "Return cons with start and end position of cui block content.
 Start and first line after header, end at of line of the first not empty
  line before footer.
 Same as `org-src--contents-area', but without content.
-Optional argument ELEMENT should be ai block if specified.
+Optional argument ELEMENT should be cui block if specified.
 Return nil or cons."
   (when-let ((element (or element (cui-block-p))))
     (let ((beg (org-element-property :contents-begin element))
@@ -447,11 +449,11 @@ Return nil or cons."
 
 
 (defun cui-block--region (&optional element)
-  "Return whole ai block cons start and end positions.
+  "Return whole cui block cons start and end positions.
 Execution in not `org-mode' is supported.
 In not `org-mode' return whole buffer min max position.
 Start at header begining of line, end at footer end of line.
-Optional argument ELEMENT is ai block."
+Optional argument ELEMENT is cui block."
   (if-let ((element (or element (when (derived-mode-p 'org-mode)
                                     (cui-block-p)))))
     (cons (org-element-property :begin element)
@@ -466,10 +468,10 @@ Optional argument ELEMENT is ai block."
 ;; -=-= get-content: fn
 
 (defun cui-block-get-content (&optional element noweb-control noweb-context not-clear-properties)
-  "Extracts the text content of the #+begin_ai...#+end_ai block.
+  "Extracts the text content of the #+begin_cui...#+end_cui block.
 Don't support tags and Org links expansion, for that use
  `cui-block-tags-get-content' instead.
-ELEMENT is the element of the ai block, use only in current moment, if
+ELEMENT is the element of the cui block, use only in current moment, if
  buffer modified you will need new ELEMENT.
 If NOWEB-CONTROL boolean is non-nil, activate no noweb references.
 If NOWEB-CONTEXT  is non-nil,  NOWEB-CONTROL is  not used,  Org property
@@ -621,7 +623,7 @@ Execution in not `org-mode' is supported.
 Caution: move pointer at the end of the last markdown subblock footer.
 If POS is not provided current cursor position is used.
 LIMIT-START and LIMIT-END are parameters for
- `cui-block--markdown-block-regions', if not provided ai block
+ `cui-block--markdown-block-regions', if not provided cui block
  content region is used or `point-min' and `point-max`.
 If POS at the footer of block, return nil.
 
@@ -633,7 +635,7 @@ Return (cons beg end), Where beg is bol for markdown block, end is bol
         (reg (unless (and limit-start limit-end)
                (if (derived-mode-p 'org-mode)
                    (or (cui-block--contents-region)
-                       (error "Not at AI block in Org mode"))
+                       (error "Not at cui block in Org mode"))
                  ;; else
                  (cons (point-min) (point-max))))))
     (let ((limit-start (or limit-start (car reg)))
@@ -672,7 +674,7 @@ M-BLOCK-START M-BLOCK-END are line begin position of markdown range with
 
 (defun cui-block--at-special-p (pos &optional dont-check-tables)
   "Check if POS in markdown block, quoted or is a table.
-Optional argument LIM-BEG is ai block begining position.
+Optional argument LIM-BEG is cui block begining position.
 Return t if pos in markdown block, table or quote.
 Side-effect: set pointer position to POS.
 If Optional argument DONT-CHECK-TABLES is not-nil disable checking if
@@ -716,7 +718,7 @@ on the current line.
 
 ;; -=-= response: insert
 (defun cui-block--insert-single-response (end-marker &optional text insert-me not-final)
-  "Insert result to ai block.
+  "Insert result to cui block.
 If text is nil, it counts as INSERT-ME and FINAL.
 
 Set as callback `cui-restapi--url-request-on-change-function' in
@@ -735,7 +737,7 @@ Variable `cui-block-roles-prefixes' is used to format role to text."
         (text (when text (string-trim text))))
     (cui--debug "cui-block--insert-single-response buffer,pos:" buffer pos "")
     ;; - write in target buffer
-    (with-current-buffer buffer ; Where target ai block located.
+    (with-current-buffer buffer ; Where target cui block located.
       (save-excursion
         ;; set mark (point) to allow user "C-u C-SPC" command to easily select the generated text
         (push-mark end-marker t)
@@ -816,7 +818,7 @@ Used for `cui-block--insert-stream-response'.")
 Used for `cui-block--insert-stream-response'.")
 
 (defun cui-block--insert-stream-response (end-marker &optional responses insert-me)
-  "Insert result to ai block for chat mode.
+  "Insert result to cui block for chat mode.
 When first chunk received we stop waiting timer for request.
 END-MARKER'is where to put result,
 RESPONSES is a list of cui-block--response, processed by
@@ -856,7 +858,7 @@ Argument INSERT-ME insert [ME]: at stop type of message."
 
                   (goto-char pos)
                   ;; - Remove lines above and provide space below, should be covered with tests.
-                  (when (looking-at cui-block--ai-block-end-re) ; "#\\+end"
+                  (when (looking-at cui-block--cui-block-end-re) ; "#\\+end"
                     (goto-char (1- pos)) ; to use insert before end-marker to preserve it at the end of block
                     (while (bolp)
                       (delete-char -1))
@@ -955,7 +957,7 @@ and content end at the beginin and the end of flat list."
 (defun cui-block--chat-role-regions (&optional element)
   "Splits the special block by role prompt.
 Execution in not `org-mode' is supported.
-Optional argument ELEMENT should be ai block
+Optional argument ELEMENT should be cui block
 Return line begining positions of first line of content, roles, #+end_ai
 line."
   (let* ((element (or element (when (derived-mode-p 'org-mode)
@@ -1008,9 +1010,9 @@ Returns the position of the region boundary or nil if not found."
     (seq-find (lambda (r) (< r current-point)) (reverse regions)))) ;; Previous region
 
 (defun cui-block-next-message (&optional arg)
-  "Navigate between AI block messages based on ARG.
+  "Navigate between cui block messages based on ARG.
 ARG may be nil, forward if positive or backward if negative between
- roles in ai block."
+ roles in cui block."
   (interactive "^p")
   (or arg (setq arg 1))
   (when (and arg (< arg 0))
@@ -1028,8 +1030,8 @@ ARG may be nil, forward if positive or backward if negative between
 
 (defun cui-block-previous-message (&optional arg)
   "Call `org-previous-visible-heading' or jump to previous ai message.
-Work if cursor in ai block.
-If at the first message, jump to the begining of current ai block.
+Work if cursor in cui block.
+If at the first message, jump to the begining of current cui block.
 Optional ARG should be positiove, 1 mean previous message."
   (interactive "^p")
   (cui-block-next-message (- (or arg 1))))
@@ -1044,20 +1046,20 @@ Optional ARG may be positive or negative to indicate direction and
          (beg (car reg))
          (end (cdr reg)))
   (cond
-   ;; begin/end of ai block
+   ;; begin/end of cui block
    ((save-excursion
       (move-beginning-of-line 1)
-      (looking-at cui-block--ai-block-begin-end-re))
+      (looking-at cui-block--cui-block-begin-end-re))
     (cui--debug "cui-block-next-item 1 begin/end")
     (end-of-line)
     (while (/= arg 0)
       (if (> arg 0)
           (progn
             (end-of-line)
-            (re-search-forward cui-block--ai-block-begin-end-re nil t)
+            (re-search-forward cui-block--cui-block-begin-end-re nil t)
             (setq arg (1- arg)))
         (beginning-of-line)
-        (re-search-backward cui-block--ai-block-begin-end-re nil t)
+        (re-search-backward cui-block--cui-block-begin-end-re nil t)
         (setq arg (1+ arg)))
       (beginning-of-line)))
    ;; markdown-headers
@@ -1105,7 +1107,7 @@ ARG should be positive number or nil."
 ;; -=-= Interactive: mark-at-point
 
 (defun cui-block-mark-at-point-by-steps ()
-  "Progressively mark a larger region in AI block at point.
+  "Progressively mark a larger region in cui block at point.
 Steps:
   0. Org element
   1. Markdown block
@@ -1214,10 +1216,10 @@ Return number of marked content."
     (list prev-inx inx)))
 
 (defun cui-block-mark-at-point (&optional arg)
-  "Should be called at ai block.
-If region is not active, check if point at message or at ai block header
+  "Should be called at cui block.
+If region is not active, check if point at message or at cui block header
  and mark it.
-If universal argument ARG is non-nil, mark content of ai block."
+If universal argument ARG is non-nil, mark content of cui block."
   (interactive "P")
   (if (region-active-p)
       (cui-block-mark-at-point-by-steps)
@@ -1227,7 +1229,7 @@ If universal argument ARG is non-nil, mark content of ai block."
          ;; at header
          ((save-excursion
             (move-beginning-of-line 1)
-            (looking-at cui-block--ai-block-begin-end-re))
+            (looking-at cui-block--cui-block-begin-end-re))
           (let* ((reg (cui-block--region))
                  (beg (car reg))
                  (end (cdr reg)))
@@ -1316,7 +1318,7 @@ NAME, or nil if no such block exists."
 ;; -=-= Markers
 
 (defun cui-block-element-by-marker (marker)
-  "Get ai block at MARKER position at marker buffer.
+  "Get cui block at MARKER position at marker buffer.
 Used in prompt engineering only: cui-prompt.el."
   (with-current-buffer (marker-buffer marker)
     (save-excursion
@@ -1331,11 +1333,11 @@ Used in `cui-call-block'"
     (copy-marker contents-end-pos)))
 
 (defun cui-block-get-header-marker (&optional element)
-  "Return marker for current ai block or begining of buffer.
+  "Return marker for current cui block or begining of buffer.
 Execution in not `org-mode' is supported.
 Pointer between # an + characters if it is `org-mode', otherwisde get
  marker from begining of current buffer.
-If optional argument ELEMENT is non-nil it is used as ai block."
+If optional argument ELEMENT is non-nil it is used as cui block."
   (let* ((el (or element
                  (when (derived-mode-p 'org-mode)
                    (cui-block-p)))))
@@ -1649,8 +1651,8 @@ support splitting."
 
 (defun cui-block--fontify-me-ai-chat-prefixes (lim-beg lim-end)
   "Fontify chat message prefixes like [ME:] with face.
-Argument LIM-BEG ai block begining.
-Argument LIM-END ai block ending."
+Argument LIM-BEG cui block begining.
+Argument LIM-END cui block ending."
   (let (sbeg send)
     (goto-char lim-beg)
     (prog1 (while (re-search-forward cui-block--chat-prefixes-re lim-end t)
@@ -1688,19 +1690,19 @@ We search for \\[...\\] multiline \\(...\\) from LIM-BEG to LIM-END."
 
 ;; -=-= Fontify: main
 (defun cui-block--font-lock-fontify-markdown-and-org (limit)
-  "Fontify markdown elements in ai blocks, up to LIMIT.
+  "Fontify markdown elements in cui blocks, up to LIMIT.
 This is special fontify function, that return t when match found.
 We insert advice right after `org-fontify-meta-lines-and-blocks-1' witch
 called as a part of Org Font Lock mode configuration of keywords (in
 `org-set-font-lock-defaults' and corresponding font-lock highlighting
 rules in `font-lock-defaults' variable.
-TODO: fontify if there is only end of ai block on page."
+TODO: fontify if there is only end of cui block on page."
   (let ((case-fold-search t)
         beg end)
     (while (and (< (point) limit)
-                (re-search-forward cui-block--ai-block-begin-re limit t))
+                (re-search-forward cui-block--cui-block-begin-re limit t))
       (setq beg (match-end 0))
-      (if (re-search-forward cui-block--ai-block-end-re limit t)
+      (if (re-search-forward cui-block--cui-block-end-re limit t)
           (setq end (match-beginning 0))
         ;; else - end of block not found, apply block to the limit
         (setq end limit))
@@ -1729,17 +1731,17 @@ TODO: fontify if there is only end of ai block on page."
     (goto-char limit))) ; return t
 
 (defun cui-block--font-lock-fontify-markdown-blocks (limit)
-  "Fontify markdown subblocks in ai blocks, up to LIMIT.
+  "Fontify markdown subblocks in cui blocks, up to LIMIT.
 Used as separate function with `cui-block--font-lock-fontify-markdown-and-org'
 for applying after others to replace smaller elements.
-TODO: fontify if there is only end of ai block on page."
+TODO: fontify if there is only end of cui block on page."
   ;; (print (list "cui-block--font-lock-fontify-markdown-and-org" (point) limit))
   (let ((case-fold-search t)
         beg end)
     (while (and (< (point) limit)
-                (re-search-forward cui-block--ai-block-begin-re limit t))
+                (re-search-forward cui-block--cui-block-begin-re limit t))
       (setq beg (match-end 0))
-      (if (re-search-forward cui-block--ai-block-end-re limit t)
+      (if (re-search-forward cui-block--cui-block-end-re limit t)
           (setq end (match-beginning 0))
         ;; else - end of block not found, apply block to the limit
         (setq end limit))
@@ -1835,7 +1837,7 @@ Return t if text was changed, nil otherwise."
       (/= (buffer-chars-modified-tick) modified-flag))))
 
 (defun cui-block-fill-insert (&optional pos stream)
-  "Fill ai block for not streaming and for streaming.
+  "Fill cui block for not streaming and for streaming.
 Uses current position in current buffer as the end.
 Full line by line.
 Ignore markdown blocks, quoted text and Org tables.
@@ -1848,14 +1850,14 @@ POS is position before insertion."
   (cui--debug "cui-block-fill-insert %s %s" (point) pos stream (region-active-p))
   (save-excursion
     (if stream
-        ;; if at current line ``` or we are at begining of markdown block in ai block.
+        ;; if at current line ``` or we are at begining of markdown block in cui block.
         (let ((case-fold-search t) ; if nil
               (end (point)))
           (unless
               ;; not markdown blocks
               (or (with-syntax-table org-mode-transpose-word-syntax-table
-                    ;; backward for ai block
-                    (when (re-search-backward cui-block--ai-block-begin-re nil t)
+                    ;; backward for cui block
+                    (when (re-search-backward cui-block--cui-block-begin-re nil t)
                       (goto-char end)
                       ;; backward for markdown block "begin". Same logic as in finction `cui-block-tags--is-special'
                       (when (re-search-backward cui-block--markdown-begin-re (match-end 0) t)
@@ -1908,8 +1910,8 @@ POS is position before insertion."
 ;; -=-= Fill-region, paragraph - interactive
 
 (defun cui-block-fill-paragraph (&optional justify region)
-  "Fill every line as paragraph in the current AI block.
-Interacive function for ai block, like `org-fill-paragraph', that fill
+  "Fill every line as paragraph in the current cui block.
+Interacive function for cui block, like `org-fill-paragraph', that fill
  message or whole block.
 Optional arguments:
 - JUSTIFY is parameter of `fill-paragraph'.
@@ -1947,7 +1949,7 @@ Return t paragraph was filled-changed."
                       ;; at header
                       ((save-excursion
                          (move-beginning-of-line 1)
-                         (looking-at cui-block--ai-block-begin-end-re))
+                         (looking-at cui-block--cui-block-begin-end-re))
                        (when (called-interactively-p 'any)
                          (message "Block content"))
                        (cons beg end))

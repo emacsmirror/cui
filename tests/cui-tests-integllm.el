@@ -1,4 +1,4 @@
-;;; cui-tests-integration2.el --- AI blocks for org-mode. -*- lexical-binding: t; -*-
+;;; cui-tests-integration2.el --- cui blocks for org-mode. -*- lexical-binding: t; -*-
 
 ;; Copyright (C) 2025 github.com/Anoncheg1,codeberg.org/Anoncheg
 ;; Author: <github.com/Anoncheg1,codeberg.org/Anoncheg>
@@ -47,7 +47,7 @@
 
 ;;; - Help functions
 (defun cui-test-setup-buffer (block-content &optional buf properties-alist)
-  "Create ai BLOCK-CONTENT and optional PROPERTIES-ALIST.
+  "Create cui block-CONTENT and optional PROPERTIES-ALIST.
 In current buffer or in BUF.
 PROPERTIES-ALIST should be an alist like ((property-name . \"value\")).
 Set cursor at begining of buffer.
@@ -63,7 +63,7 @@ and INFO-ALIST is the parameters from its header."
     ;; Check if #+begin_ai exists to avoid search failure
     (unless (string-match-p "#\\+begin_ai" block-content)
       (error "Test setup failed: block-content does not contain '#+begin_ai'"))
-    ;; Move point to the start of the AI block
+    ;; Move point to the start of the cui block
     (unless (search-forward "#+begin_ai" nil t)
       (error "Failed to find '#+begin_ai' in buffer"))
     (beginning-of-line) ; Ensure point is at the start of the block

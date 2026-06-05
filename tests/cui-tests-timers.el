@@ -1,4 +1,4 @@
-;;; cui-tests-timers.el --- AI blocks for org-mode. -*- lexical-binding: t; -*-
+;;; cui-tests-timers.el --- cui blocks for org-mode. -*- lexical-binding: t; -*-
 
 ;; Copyright (C) 2025 github.com/Anoncheg1,codeberg.org/Anoncheg
 ;; Author: <github.com/Anoncheg1,codeberg.org/Anoncheg>

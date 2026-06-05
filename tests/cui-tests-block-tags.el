@@ -810,7 +810,7 @@ ss
 (ert-deftest cui-tests-block-tags--compose-m-block ()
   (should
    (string-equal (cui-block-tags--compose-m-block "aaa" :lang "bbb" :header "ccc") "\nccc\n```bbb\naaa\n```"))
-  ;; Header are ignored for AI block
+  ;; Header are ignored for cui block
   (should
    (string-equal (cui-block-tags--compose-m-block "asda\n[me:] asdas" :lang "ai" :header "some header") "asda\n[me:] asdas"))
   (should
@@ -1133,7 +1133,7 @@ test
            (cui-block-parse-part-hook (list (lambda (x role) (concat x "hh2"))))
            (res (cui-block-tags-get-content-ai-messages
                  element
-                 nil nil nil nil nil ; noweb-control links-only-last not-clear-properties ai-block-markers disable-tags
+                 nil nil nil nil nil ; noweb-control links-only-last not-clear-properties cui-block-markers disable-tags
                  'chat "sys1" "3")))
       ;; res))
       (should (equal res '[(:role system :content "sys1 3")

@@ -26,7 +26,7 @@
 
 ;;; Commentary:
 
-;; Get info block from #begin_ai and call url-retrieve.  Asynchronous
+;; Get info block from #begin_cui and call url-retrieve.  Asynchronous
 ;; but only one call per buffer.
 ;;
 ;;
@@ -195,7 +195,7 @@ prompt."
   "The system message helps set the behavior of the assistant:
 https://platform.openai.com/docs/guides/chat/introduction.  This
 default prompt is send as the first message before any user (ME)
-or assistant (AI) messages.  Inside a +#begin_ai...#+end_ai block
+or assistant (AI) messages.  Inside a +#begin_cui...#+end_cui block
 you can override it with: '[SYS]: <your prompt>'."
   :type 'string
   :group 'cui)
@@ -206,7 +206,7 @@ you can override it with: '[SYS]: <your prompt>'."
 ;; message.
 ;; Get prompt from `cui-restapi-default-chat-system-prompt'.
 ;; You can set this to true for a single block using the
-;; :sys-everywhere option on the #+begin_ai block.
+;; :sys-everywhere option on the #+begin_cui block.
 ;; This can be useful to enforce the behavior specified by this
 ;; messages."
 ;;   :type '(choice (const :tag "Before every message" all)
@@ -244,7 +244,7 @@ you can override it with: '[SYS]: <your prompt>'."
 Available choices include:
 - `cui-block-insert-result-message' accept message and header-marker parameters.
 To  use  url-buffer,  get header-marker  with  (cui-timers--get-variable
-url-buffer), hence every url-buffer key bound to some ai block variable.
+url-buffer), hence every url-buffer key bound to some cui block variable.
 - `cui-restapi--show-error' ignore header-marker parameter.
 Or provide your own function."
   :type 'function
@@ -531,7 +531,7 @@ If MESSAGES are provided, type of request is chat, otherwise completion."
   "Compose API request from data and start a server-sent event stream.
 Call `cui-restapi--url-request' function as a next step.
 Called from `cui-call-block' in main file.
-ELEMENT org-element - is ai block, should be converted to market at
+ELEMENT org-element - is cui block, should be converted to market at
 once.
 - REQ-TYPE symbol - is completion or chat mostly.  Set by
  `cui-req-type-functions'.
@@ -927,7 +927,7 @@ see `cui-restapi-request-prepare'."
 
 (cl-defun cui-restapi-request-llm-retries (service model timeout callback &optional &key retries prompt messages header-marker max-tokens temperature top-p frequency-penalty presence-penalty)
   "`cui-restapi--url-request-slim' function with TIMEOUT and RETRIES.
-Only one request per ai block is allowed at one time.
+Only one request per cui block is allowed at one time.
 Timer function restart requst and restart timer with attempts-1.
 In callback we add cancel timer function.
 We save and cancel time only in callback.

@@ -110,13 +110,36 @@ Should be added the last to be executed first."
 ;; -=-= Markdown: folding _____TODO_______
 ;; TODO: - "#" may be inside markdown block!!!
 
-;; (defun cui-optional---back-to-heading-or-point-min ()
-;;   "`org-back-to-heading-or-point-min'."
-;;   (if (org-before-first-heading-p)
-;;       (goto-char (point-min))
-;;     (org-back-to-heading invisible-ok))
-;;   )
+;; (defun cui-optional--markdown-heading-p ()
+;;   (save-excursion
+;;     (forward-line 0)
+;;     (and (looking-at cui-block--markdown-header-re)
+;;          (not (cui-block--markdown-block-p)))))
 
+;; (defun cui-optional--markdown-end-of-subtree ()
+;;   "`org-end-of-subtree' uses `org-back-to-heading-or-point-min'."
+;;   (let ((current-level (save-excursion
+;;                          (beginning-of-line)
+;;                          (if (looking-at "^\\(#+\\) ")
+;;                              (length (match-string 1))
+;;                            0))))
+;;     (re-search-forward (format "^\\(#\\{1,%d\\}\\) " (1- current-level)) nil t)))
+;;   ;; (if (org-before-first-heading-p)
+;;   ;;     (goto-char (point-min))
+;;   ;;   (org-back-to-heading invisible-ok))
+;;   ;; )
+
+;; (defun cui-optional--markdown-cycle ()
+;; "'org-cycle-internal-local'
+;; `org-fold-folded-p'."
+;; (save-excursion
+;;   (let ((eoh (line-end-position)) ; end of line
+;;         (eos (save-excursion
+;; 	       (org-end-of-subtree t t) ; set cursor at first header after end
+;; 	       (unless (eobp) (forward-char -1))
+;; 	       (point))))
+
+;; )))
 ;; (defun cui-optional--markdown-end-of-subtree ()
 ;;   "`org-end-of-subtree'"
 ;;   (org-back-to-heading-or-point-min invisible-ok)

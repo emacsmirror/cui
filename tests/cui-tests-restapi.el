@@ -230,7 +230,7 @@
 ;;           (insert (format "#+PROPERTY: %s %s\n" (car prop) (cdr prop)))))
 ;;       (insert block-content)
 ;;       (goto-char (point-min))
-;;       ;; Move point to the start of the AI block to ensure `org-element-at-point` works
+;;       ;; Move point to the start of the cui block to ensure `org-element-at-point` works
 ;;       ;; and `org-entry-get-with-inheritance` can find properties.
 ;;       (search-forward "#+begin_ai")
 ;;       (let* ((element (org-element-at-point))
