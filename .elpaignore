@@ -1,0 +1,8 @@
+LICENSE
+.github
+tests/*
+trashcan.el.tmp
+.dir-locals.el
+tests.sh
+.gitignore
+doc.org

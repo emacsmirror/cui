@@ -1,0 +1,721 @@
+;-*- mode: Org; fill-column: 110;-*-
+* Feature: tags, links, noweb, arguments
+- tags, links
+- noweb - expand references (If :noweb parameter or ~cui-noweb~ Org property is set.) but don't evaluated or referenced itself. see [[*Org noweb]]
+
+Replacing links trigger noweb links in target blocks and replacing links in them also.
+
+For sending request we replace links in all user messages, for expansion of links and tags we replace links in the last user message only. Also expand noweb in ~cui-block-get-content~ and in ~cui-block-tags-get-content~.
+
+Arguments not implemented: https://orgmode.org/manual/Environment-of-a-Code-Block.html
+* behavior conventions
+if optional ELEMENT is not provided and current buffer is org-mode, we use ~cui-block-p~ to get block at current positiion.
+* functions naming conventions
+all functions that return range or ranges of positions of string or buffer should ends with “-region” or “-regions”.
+- not “area” or “range”
+* preparation steps of block content for LLM
+Main function to get content of block:
+- cui-block-get-content - works without links and tags expansion
+- cui-restapi-prepare-content - works for all user messages
+- cui-block-tags-get-content - replace links aonly in last user message, works for all cui-block-tags-org-blocks-types
+
+# Old:
+*cui-restapi-request-prepare chain* that call `cui-restapi-prepare-content'
+1) ~cui-block-msgs--collect-chat-messages-at-point~
+  + cui-block--collect-chat-messages - vector
+  + cui-block-tags-replace - string
+  + cui-block-msgs--collect-chat-messages-from-string
+    - cui-block--collect-chat-messages
+2) (messages (cui-block-msgs--modify-vector-content messages 'user #'cui-block-tags-replace))
+3) (messages (cui-block-msgs--modify-vector-content messages 'user #'cui-block-tags--clear-properties))
+
+*cui-restapi-request-prepare chain* that call ~cui-block-tags-get-content-ai-messages~
+
+*cui-prompt.el chain* for `cui-prompt-request-chain' function
+1) cui-restapi--collect-chat-messages-at-point - vector
+3) cui-restapi-request-llm-retries ->
+  - (messages (cui-block-msgs--modify-vector-content messages 'user #'cui-block-tags-replace))
+  - (messages (cui-block-msgs--modify-vector-content messages 'user #'cui-block-tags--clear-properties))
+
+* Hooks - messages preparation for sending or content reading
+cases:
+- blend all messages to a one text at `cui-block-get-content' step
+- blend messages at `cui-restapi-prepare-content' step
+- change something in the “last-user-content”
+- format text in all messages one by one
+
+May be implemented at:
+| operate at raw text level:        | cui-restapi--collect-chat-messages                              |
+
+| operate at messages vector level: | cui-restapi-prepare-content and cui-restapi-request-llm-retries |
+
+Solution:
+- before any - raw text level: as `cui-block-parse-part-hook' in `cui-block-msgs--parse-part'
+- after all - vector level: as `cui-restapi-after-prepare-messages-hook' in `cui-restapi-request-llm-retries' and in `cui-restapi-prepare-content'
+* Hook - HTTP headers before sending
+[[file:~/sources/emacs-cui/cui-restapi.el::680::(defun cui-restapi--get-headers (service)]]
+* RESTAPI: JSON decoding path
+For not stream
+- `cui-restapi--url-request-on-change-function' ->
+- `cui-restapi--get-single-response-text' ->
+- `cui-block--insert-single-response' ->
+- `insert'
+
+for stream:
+- `cui-restapi--url-request-on-change-function' ->
+- `cui-block--insert-stream-response' -> may be used for single response.
+- `cui-restapi--normalize-response' ->
+- `insert'
+
+To read data from JSON there is two ways (json-read) and (json-read-from-string), we specify plist as target,
+ so we use (plist-get data 'choices) instead of (alist-get 'choices data).
+* Regex: file path
+: "@\\(\\.\\.?\\|\\.\\.?/\\|\\.\\.?\\\\\\|/\\|\\\\\\|[A-Za-z]:\\\\\\|~[a-zA-Z0-9_.-]*/*\\)[a-zA-Z0-9_./\\\\-]*"
+
+### 1. Prefix: `"@"`
+- **Matches:** Literal character `@` at the start of the path string.
+- **Purpose:** Likely used in a markup or custom syntax to indicate
+ the start of a path.
+
+---
+### 2. Initial Path Segment:
+`\\( ... \\)` is a group using alternation (`\\|`) to match different
+ path prefixes:
+
+#### `\\.\\.?`
+- **Matches:** `.` or `..`
+- **Purpose:** Bare dot or double dot for current/parent directory
+ (less common alone).
+
+####  `\\.\\.?/`
+- **Matches:** `./` or `../`
+- **Purpose:** Relative Unix paths (current and parent directory).
+
+####  `\\.\\.?\\\\`
+- **Matches:** `.\\` or `..\\`
+- **Purpose:** Relative Windows paths.
+
+####  `/`
+- **Matches:** `/`
+- **Purpose:** Unix-style absolute path.
+
+####  `\\\\`
+- **Matches:** `\`
+- **Purpose:** Windows-style absolute path.
+
+####  `[A-Za-z]:\\\\`
+- **Matches:** For example, `C:\`
+- **Purpose:** Windows drive letter root.
+
+####  `~[a-zA-Z0-9_.-]*/*`
+- **Matches:** `~`, `~/`, `~user/`, `~user`
+- **Purpose:** Linux/Unix home or other user's home directory, with
+ optional trailing slash.
+
+---
+### 3. Path Body: `[a-zA-Z0-9_./\\\\-]*`
+- **Matches:** Zero or more valid path characters:
+    - Letters (`a-zA-Z`)
+    - Digits (`0-9`)
+    - Underscore (`_`)
+    - Dot (`.`)
+    - Slash (`/`)
+    - Backslash (`\\`)
+    - Dash (`-`)
+- **Purpose:** Matches the remainder of the path, including
+ directories and filenames composed of these characters.
+
+---
+## Summary Table
+| Segment                   | Example Match      | Interpretation                |
+|---------------------------|-------------------|-------------------------------|
+| `@`                       | `@`               | Path marker                   |
+| `./`, `../`               | `@./foo`          | Unix relative path            |
+| `.\\`, `..\\`             | `@.\\foo`         | Windows relative path         |
+| `/`                       | `@/etc/passwd`    | Unix absolute path            |
+| `\`                       | `@\\windows`      | Windows absolute path         |
+| `[A-Za-z]:\`              | `@C:\Users`       | Windows drive letter root     |
+| `~`, `~/foo`, `~user/doc` | `@~/.bashrc`      | Unix home directories         |
+| Path body                 | `/foo/bar-1`      | Subdirectories/files          |
+
+* Regex: markdown ** asterisk
+: "\\(^\\|[^*]\\)\\(\\*\\*\\*\\|\\*\\*\\)"
+used in the markdown fontifier.
+
+---
+# Explanation by Parts
+## 1. Regex Structure
+- `\\(^\\|[^*]\\)` — **Group 1**:
+  Matches either the beginning of a line (`^`),
+  **OR** any character that is NOT an asterisk (`[^*]`).
+
+- `\\(\\*\\*\\*\\|\\*\\*\\)` — **Group 2**:
+  Matches either three asterisks (`***`)
+  **OR** two asterisks (`**`).
+  (The backslashes `\\` are needed for escaping in Elisp strings.)
+
+## 2. Why This Structure?
+- **Objective:**
+  Find "**" or "***" markers in the text,
+  but avoid matching sequences where asterisks are part of a longer
+ run (like "****")
+  and avoid overlapping matches.
+
+- By requiring either line start or a non-asterisk before the marker,
+  you reduce false positives and overlapping matches.
+
+## 3. Match Groups
+- **Group 1**: Context before the marker (not fontified).
+- **Group 2**: The bold marker itself (to be fontified).
+
+## 4. How It Works in Practice
+### Example 1: Simple start-of-line
+```
+**bold**
+```
+- At position 0: Line start, matches `^`
+- Next: "**" matches Group 2.
+
+### Example 2: After space
+```
+some **bold**
+```
+- The space is not an asterisk, so `[^*]` matches.
+- "**" matches Group 2.
+
+### Example 3: Avoid overlap
+```
+****bold****
+```
+- After the first "**", the next "*" is part of "****",
+  so `[^*]` doesn't match.
+- Only the initial "**" or "***" are targeted.
+
+---
+# Summary Table
+| Part                | Meaning                               |
+|---------------------|---------------------------------------|
+| `\\(^\\|[^*]\\)`    | Start of line OR not an asterisk      |
+| `\\*\\*\\*\\|\\*\\*`| "***" OR "**" (the marker itself)     |
+
+* Indent line for markdown subblock
+~org-indent-line~ do (org-babel-do-in-edit-buffer (indent-according-to-mode))
+~(org-babel-do-in-edit-buffer (funcall func))~ - check that at src-block and do
+~(org-babel-do-in-edit-buffer (&rest body)~ - save point as marker and do
+1) (org-edit-src-code)
+
+(org-src--edit-element
+- datum - element parsed with org-element-type - *Org syntax node* as a list
+  - uses :language, :type (by org-element-type), :label-fmt, :type :begin (org-src--contents-area)
+- name - language string
+- initlalize - (lambda ()
+  - activate mode
+  - (org-escape-code-in-region (point-min) (point-max)))
+2) (progn ,@body)
+3) (org-edit-src-exit)
+
+*Org syntax node* - [[org-element-ast.el::40]]
+
+(list :type (org-element--get-cached-string type)
+             :type-explicit-p explicit-type-p
+	     :path path
+	     :format format
+	     :raw-link (or raw-link path)
+	     :application application
+	     :search-option search-option
+	     :begin begin
+	     :end end
+	     :contents-begin contents-begin
+	     :contents-end contents-end
+	     :post-blank post-blank)
+* Working with prefixes
+We use
+- RestAPI -> system -> Prefix
+- Prefix -> system -> RestAPI
+
+#+begin_src elisp :lexical t :results none :exports code :eval no
+;; RestAPI -> Prefix
+(let* ((role "user1")
+       (role-cui (or (cdr (assoc-string role cui-block-roles-restapi))
+                     cui-block-roles-restapi-unknown)))
+  (car (rassoc role-cui cui-block-roles-prefixes))) ; => "ai+"
+
+;; Prefix -> system
+(let ((role "+me1"))
+  (or (cdr (assoc-string role cui-block-roles-prefixes)) ; Get value by key
+      cui-block-roles-prefixes-unknown)) ; => assistant
+#+end_src
+
+* Tangling and Noweb: in Org
+** Tangling
+Links are expanded in chain, loops prevented.
+
+Noweb dont expanded in links targets. Expansion happend in steps: 1) noweb 2) links&tags
+
+“.ai” files extended by splitting chat and enrich it with messages. Other files inserted with adding “_” before chat prefixes to mask them.
+
+Uses:
+- ~:tangle FILENAME~ or ~:tangle yes~ ( ~:tangle~ is not valid)
+- If your Org file is project.org and the code block is in python, the tangled file will be project.py
+- C-c C-v C-t = M-x org-babel-tangle
+
+
+We
+- add :around advice `org-babel-get-src-block-info' to get content of ia block
+- add :around advice `org-babel-where-is-src-block-head', that used for checking that it is src block by tangling system.
+- add file extension “ai” to `org-babel-tangle-lang-exts' variable
+
+Main difficulty is pereventing loop by extension of noweb and links.
+
+If file extension of link in body is “ai”, we don't wrap code in markdown block at extension. see [[*Markdown: ```blocks]]
+
+
+see [[file:~/docsmy_short/modified/emacsh::*tangling <<tangle>>][tangling <<tangle>>]]
+*** Implementation notes
+Main: ~cui-block-tags--get-content-at-point~
+
+get ai block in Org
+- ai block in Org - wrapped in ~cui-block-tags--get-content-org-block-at-point~
+
+in ai file
+- [[file:~/sources/emacs-cui/cui-block-tags.el::706::((string-equal "ai" (cui-block-tags--filepath-to-language (buffer-file-name)))]]
+
+in ai block at point
+- markdown subblock - wrapped in markdown block ~cui-block-tags--get-m-block-at-point~
+- message - without markdown block wrapping [[file:~/sources/emacs-cui/cui-block-tags.el::785::(if (and (looking-at cui-block--chat-prefixes-re)]]
+
+Other modes at point ~cui-block-tags--get-content-at-point-not-org~.
+
+file path:
+- cui-block-tags--compose-block-for-path-full
+
+Simpliest way to get content with full explansion without text properties:
+#+begin_src elisp :lexical t :results none :exports code :eval no
+(let ((element (cui-block-p)))
+  (cui-block-tags--clear-properties
+   (cui-block-tags-replace (cui-block-get-content element nil :tangle nil)
+                           (cui-block-get-header-marker element))))
+#+end_src
+
+
+** Noweb
+*** get content
+We always split content of message after expanding noweb.
+*** usage
+Expand links on  evaluating, tangling, or exporting.
+- Doc https://orgmode.org/manual/Noweb-Reference-Syntax.html
+
+
+#+begin_src org
+,#+NAME: initialization
+,#+BEGIN_SRC emacs-lisp
+  (setq sentence "Never a foot too far, even.")
+,#+END_SRC
+
+,#+BEGIN_SRC emacs-lisp :noweb yes
+  <<initialization>>
+  (reverse sentence)
+,#+END_SRC
+
+Expanded to:
+,#+BEGIN_SRC emacs-lisp :noweb yes
+  (setq sentence "Never a foot too far, even.")
+  (reverse sentence)
+,#+END_SRC
+
+#+end_src
+*** chain of calls
+
+
+
+- (org-babel-expand-noweb-references ‘("markdown" "<<ini>>"))
+-f for
+
+- For every <<>> string above,
+  - org-babel-ref-goto-headline-id("ini") - we found block with “ini” name
+  - org-babel-named-src-block-regexp-for-name("ini")
+
+
+  - (org-babel-ref-resolve id) - resolve, whe id is “ini”
+
+  - apply “expand-body” macros use ( 1 of info to get body)
+    - In most Org Babel code, the second element is the body
+    - most of code handle cache `org-babel-expand-noweb-references--cache`
+
+- `expand-body` receives `info`, which is produced by `org-babel-get-src-block-info`.
+- `info` is a list: `(language body params)` where:
+  - `body` is the actual content of the block.
+  - `params` include block metadata.
+
+*** test
+#+NAME: initialization
+#+BEGIN_SRC emacs-lisp
+  (setq sentence "Never a foot too far, even.")
+#+END_SRC
+
+#+RESULTS: initialization
+: Never a foot too far, even.
+
+
+(org-babel-get-src-block-info) - src
+: ("emacs-lisp" "  (setq sentence \"Never a foot too far, even.\")" ((:colname-names) (:rowname-names) (:result-params "replace") (:result-type . value) (:results . "replace") (:exports . "code") (:lexical . "no") (:tangle . "no") (:hlines . "no") (:noweb . "no") (:cache . "no") (:session . "none") ...) "" "initialization" 8809 "(ref:%s)")
+
+(org-babel-expand-noweb-references (cui-block-get-info))
+
+
+: (cui-block-get-info)
+((:stream . "nil") (:max-tokens . 1200) (:sys . "Be helpful.") (:service . "github") (:model . "openai/gpt-4.1"))
+
+(org-babel--expand-body (cui-block-get-info)
+#+begin_ai :noweb yes :stream nil :max-tokens 1200 :sys "Be helpful."  :service github :model "openai/gpt-4.1"
+<<initialization>>
+#+end_ai
+: -----------------------------------------------------------
+
+#+begin_src elisp :noweb yes :lexical t :results none :exports code :eval yes
+<<initialization>>
+(org-babel-expand-noweb-references (list "markdown" "```lisp\n<<initialization>>\n```"))
+#+end_src
+
+(org-babel--expand-body (org-babel-get-src-block-info))
+*** main function (old)
+#+begin_src elisp :lexical t :results none :exports code :eval no
+(defun my/org-babel-noweb-p (params context)
+  "Check if PARAMS require expansion in CONTEXT.
+CONTEXT may be one of :tangle, :export or :eval."
+  (let ((allowed-values (cl-case context
+			  (:tangle '("yes" "tangle" "no-export" "strip-export" "strip-tangle"))
+			  (:eval   '("yes" "no-export" "strip-export" "eval" "strip-tangle"))
+			  (:export '("yes" "strip-tangle")))))
+    (cl-some (lambda (v) (member v allowed-values))
+	     (split-string (or (cdr (assq :noweb params)) "")))))
+
+(let ((info '((:noweb . "no") (:stream . "nil") (:max-tokens . 1200) (:sys . "Be helpful.") (:service . "github") (:model . "openai/gpt-4.1"))))
+  (my/org-babel-noweb-p info :eval))
+#+end_src
+*** test
+#+NAME: ina
+#+begin_ai
+test
+#+end_ai
+
+
+#+begin_ai
+<<ina()>>
+#+end_ai
+
+test:
+: (org-babel-expand-noweb-references (list "text" "aa <<ina()>> bb"))
+: (org-babel-expand-noweb-references (list "text" "aa <<ina()>> bb"))
+: (cui-block--apply-noweb "<<ina()>> aa <<ina()>> bb")
+
+*** implementation
+`cui-block-tags-get-content' call:
+(cui-block--apply-noweb) - that call `org-babel-expand-noweb-references', call cui--org-babel-get-src-block-info, but inly if reference is <<inf()>> with “()”
+- referenced ai blocks evalueated by cui-block-tags-get-content with :tangle contenxt, so subcalls is possible
+
+or (old):
+- cui-block-get-content - call `org-babel-expand-noweb-references' directly, but referenced subbocks evaluated with new `cui-block-tags-get-content'
+*** calling for string of context with noweb
+: (org-babel-expand-noweb-references (list "markdown" unexpanded-content))
+
+* Tangling and Noweb: control
+Controlled in
+- cui-block-tags-get-content-ai-messages
+- cui-block-get-content
+
+Expansion of noweb controled by noweb parameter ~noweb-control~ in cui-block-tags functions.
+
+How to handle noweb in subblocks? pass context or control?
+- For now, we *dont activate noweb in subsequent block* at links expansion.
+
+Tags and links expanded always in :tangle and :eval context and in subsequent sub-blocks by links.
+
+Noweb contrelled by :noweb ai block parameter and readed according to context - tangling, evaluating or exporting.
+- `org-babel-noweb-p' function accept context and read :noweb according to context provided. If there is no :noweb, retunr nil.
+
+* Tangling: loop prevention
+If loop detected, we disable ~tangle-control~ and ~noweb-control~.
+
+How? We keep trace of all ai blocks that was pros a list of header markers. Do it in functions:
+-`cui-block-tags-get-content-ai-messages'
+
+* Markdown: ```blocks
+
+Prepare markdown block  `cui-block-tags--compose-m-block' - used by:
+- `cui-block-tags--compose-block-for-path-full'
+- `cui-block-tags--get-content-at-point-not-org'
+- `cui-block-tags--get-content-at-point-org'
+  - `cui-block-tags--get-content-org-block-at-point'
+- `cui-block-tags--get-org-links-content' - for links NUM-NUM
+- `cui-block-tags-replace' - for backtrace
+
+Find markdown positions in ai block
+- `cui-block--markdown-block-p' - any ``` block at separate lines.
+
+To detect language for compose-m-block:
+- in `cui-block-tags--get-content-org-block-at-point' - for Org element - src or ai block
+- cui-block-tags--filepath-to-language
+
+
+add ai block suport:
+cui-block-tags--get-content-at-point-org
+- cui-block-tags--get-m-block-at-point
+
+cui-block-tags--get-content-at-point-not-org called from:
+- cui-block-tags--get-content-at-point - used in:
+  - cui-block-tags--get-org-links-content - num1
+  - cui-block-tags--get-replacement-for-org-link -
+* Mardkown: folding headers
+show: (org-fold-show-subtree)
+hide: (org-fold-subtree t)
+- org-back-to-heading
+- org-fold-region
+
+show in ORG: org-cycle(nil)   org-cycle-internal-local()   org-fold-show-entry() org-fold-region(9418 9448 nil outline)
+- ?show in ORG: org-fold-show-children() -> org-fold-heading(nil)
+
+hide in ORG: org-cycle(nil) -> org-cycle-internal-local() -> org-fold-region(17690 17852 t outline)
+
+Loop show: org-cycle-global(nil) -> org-cycle((4)) -> org-cycle-internal-global() -> org-cycle-overview() -> org-fold-region(448 545 t outline)
+
+
+
+
+
+
+* fill - cui-block-fill-function
+- cui-block-fill-insert
+  - fill-region-as-paragraph - stream
+  - cui-block-fill-region - not stream, check markdown blocks
+    - cui-block-fill-region-as-paragraph - check “^> ” and tables.
+      - fill-region-as-paragraph
+org-fill-paragraph = cui-block-fill-paragraph
+* global Emacs variables that keep infor about file extensions and modes
+- auto-mode-alist - (file-extension . major-mode) - used in `cui-block-tags--filepath-to-language'
+- org-src-lang-modes - used by `cui-block-tags--filepath-to-language'. In Org, used by org-src-get-lang-mode in org-src-font-lock-fontify-block.
+- org-babel-tangle-lang-exts - used by Org function `org-babel-tangle-single-block' which called from `org-babel-tangle'.
+* v0.4
+** cui-block-msgs.el (solved) [2026-04-30 Thu]
+cui-block-tags.el depends on:
+- cui-block-msgs--modify-vector-last-user-content
+- cui-block-msgs--modify-vector-content
+- cui-restapi-add-max-tokens-recommendation
+- cui-restapi--get-length-recommendation
+
+cui-restapi.el depends on:
+- cui-block-tags-replace - for old completion in ~cui-restapi-request-prepare~, messages ~cui-restapi-request-llm-retries~
+- cui-block-tags-get-content-ai-messages - in ~cui-restapi-request-prepare~
+- cui-block-tags--clear-properties - in ~cui-restapi-request-llm-retries~
+
+f-s:
+- cui-block-tags-get-content  - used in ~cui-block-tags--get-content-org-block-at-point~ and ~cui-expand-block~
+  - return string
+  - get content of any supported Org block
+- cui-block-tags-get-content-ai-messages -
+  - return vector
+  - get content for ai block
+  - 1) cui-block-msgs--collect-chat-messages-at-point 2) apply noweb and tags.
+- cui-restapi-request-prepare - used only in cui.el 1) prepare messages, 2) set callback 3) call REST, 4) set timer
+- cui-restapi-request-llm-retries - used in cui-prompt-request-chain
+
+Solution:
+1) split cui-block-msgs--collect-chat-messages-at-point to get messages and apply noweb and tags (not needed)
+2) cui-restapi-request-prepare - split for one in cui.el that prepare messages as vector and second that call REST and set times and set callbacks
+3) cui-restapi-request-llm-retries - move messages preparation code to prompt.el
+4)
+
+** image link [2026-04-30 Thu]
+cui-request-prepare
+- cui-block-tags-get-content-ai-messages
+  - cui-block-tags-replace - on vector
+- cui-restapi-request-prepare (vector)
+
+two sources: 1) :screen, ~:image file~ 2) in block links
+
+strategy:
+- in cui-block-tags--compose-block-for-path-full  we replaced link to our link and signal error on binary
+- in or - add new message form?
+  - cui-block-msgs--collect-chat-messages-at-point
+  - cui-restapi-request-prepare
+- in cui-restapi--payload properly format JSON if [[image:/path]] in last message.
+
+strategy:
+1) add function that add images to the last or N message. - to use in cui-request-prepare for :screen
+2) in cui-block-tags-get-content-ai-messages detect image link and split message accordingly, modify
+ ~cui-block-tags-replace~, enshure that  ~cui-block-msgs--modify-vector-content~ and ~cui-block-msgs--modify-vector-last-user-content~ is consistent
+
+cui-parse-org-header -> cui-request-prepare -> cui-restapi--url-request
+- -> cui-restapi--payload - accept messages in any form ( with images)
+
+Idiea: allow :screen, provide list binary files at step of parsing headers somehwere, provide hooks.
+** Image link: json [2026-04-30 Thu]
+type: Input_image:
+#+begin_src python :results none :exports code :eval no
+# Path to your image
+image_path = "path_to_your_image.jpg"
+
+# Getting the Base64 string
+base64_image = encode_image(image_path)
+
+response = client.responses.create(
+    model="gpt-4.1",
+    input=[
+        {
+            "role": "user",
+            "content": [
+                { "type": "input_text", "text": "what's in this image?" },
+                {
+                    "type": "input_image",
+                    "image_url": f"data:image/jpeg;base64,{base64_image}",
+                },
+            ],
+        }
+    ],
+)
+#+end_src
+
+Type: image_url
+#+begin_src bash :eval no :exports code :results none
+"content": [
+                {"type": "text", "text": "$mes"},
+                {
+                    "type": "image_url",
+                    "image_url": {
+                        "url": "data:${mimetype};base64,$base64_image"
+                    }
+                }
+            ]
+    local mimetype="image/jpeg"
+    local mimetype="image/png"
+#+end_src
+
+Multiple:
+#+begin_src json :results output pp
+{
+  "role": "user",
+  "content": [
+    {
+      "type": "text",
+      "text": "Here is the first chart showing sales data."
+    },
+    {
+      "type": "image_url",
+      "image_url": { "url": "https://example.com/sales.jpg" }
+    },
+    {
+      "type": "text",
+      "text": "And here is the second chart showing marketing spend."
+    },
+    {
+      "type": "image_url",
+      "image_url": { "url": "https://example.com/marketing.jpg" }
+    },
+    {
+      "type": "text",
+      "text": "Based on these two, what is the ROI?"
+    }
+  ]
+}
+#+end_src
+
+#+begin_src python :exports code :eval no
+
+#+end_src
+
+Normal content consisten of one string
+#+begin_src json :exports code :eval no
+  "messages": [
+    {
+      "role": "system",
+      "content": "."
+    },
+    {
+      "role": "user",
+      "content": "?"
+    }
+  ],
+#+end_src
+
+** audio
+#+begin_src json
+curl http://localhost:8080/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "ggml-org/Voxtral-Mini-3B-2507-GGUF",
+    "messages": [
+      {
+        "role": "user",
+        "content": [
+          {
+            "type": "text",
+            "text": "Transcribe this audio."
+          },
+          {
+            "type": "input_audio",
+            "input_audio": {
+              "data": "AUDIO_BASE64_STRING",
+              "format": "wav"
+            }
+          }
+        ]
+      }
+    ],
+    "max_tokens": 1024
+  }'
+#+end_src
+Key JSON Structure Details
+- role: Set to "user" for the input.
+- content: An array containing both text and audio objects.
+- type: "input_audio": Specifies the modality.
+- data: The base64-encoded audio content.
+- format: The audio format (e.g., "wav", "mp3").
+* cui-timers.el: Progress Reporter and counting requests [2026-05-12 Tue]
+modeline set with: ~cui-timers--cui-update-mode-line~ in:
+  - ~(length (cui-timers--get-all-keys))~ - get count of all requests
+  - ~cui-timers--update-global-progress-reporter~
+
+*progress reporter* set with (~make-progress-reporter~, ~progress-reporter-update~, ~progress-reporter-done~) in:
+- ~cui-timers--progress-reporter-run~ - run timer that just make reporter visible every second
+- ~cui-timers--stop-global-progress-reporter~
+
+New request run: ~cui-timers--progress-reporter-run~
+- set modeline, count
+
+“Now, we dont show” comment used for disabling ouput of current request in mideline
+s
+* Tests: Not covered staff
+- font-locks
+- fill paragraph
+- file is binary?
+* Comparision with competititors [2026-04-30 Thu]
+| Feature    | CUI                         | gptel                          | ollama-buddy               |
+|------------+-----------------------------+--------------------------------+----------------------------|
+| Primary UI | Org Blocks (#+begin_ai)     | Any Buffer / Chat Buffer       | Popup Menus / Org Headings |
+| Focus      | Literate AI / Documentation | Speed & Simplicity             | Local Ollama Integration   |
+| Strengths  | Chains, Tags, Noweb support | Provider agnostic, very stable | Plan mode, Tool calling    |
+* Evolution path
+Multimodal
+- :vision window-name :: parameter that automatically attaches a screenshot of a specific window (like a web browser with a CSS error) to the prompt, enabling the AI to "see" the UI bug you are trying to fix in your code.
+- :audio :: record with stop button and attach to message.
+
+RAG - ~:rag~
+- @project <?>:: and hook or integration to enrich context
+- silently retrieves the most relevant 5–10 chunks from your last three years of research and feeds them into the prompt.
+- For: 1) "Infinite" Context 2) Privacy & "The Air Gap" bulk of your library private and offline. 3) Semantic Navigation
+- @context, @notes, @code, @paper[2024], @buffers
+- @save - to automaticly save all interactions somewhere.
+- As you write a prompt about "Quantum Entanglement," CUI performs a background vector search and shows a list
+ of your 3-year-old notes on "Bell's Inequality," allowing you to click-and-insert them into the current
+ prompt instantly.
+- ??? Integrate with org-roam to use existing SQLite metadata as "filters" for the vector search. ???
+
+Suggests:
+- @buffers indexed online, autocomplete or suggest relevant parts to include
+
+
+Active - “Transient” library may be useful
+- :behavior agent :: parameter that allows the block to trigger terminal commands or modify other buffers autonomously, with a "human-in-the-loop" confirmation for each step.
+
+MCP Client (like Fastio or a local Python script).
+- "Give me context for 'Python refactoring'," and the server—which might be indexing your files, your browser history, and your Slack—returns the data.

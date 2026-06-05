@@ -1,0 +1,1480 @@
+;;; cui-restapi.el --- OpenAI REST API related functions  -*- lexical-binding: t; -*-
+
+;; Copyright (C) 2025 github.com/Anoncheg1,codeberg.org/Anoncheg
+;; Author: <github.com/Anoncheg1,codeberg.org/Anoncheg>
+;; SPDX-License-Identifier: AGPL-3.0-or-later
+
+;;; License
+
+;; This file is not part of GNU Emacs.
+
+;; This program is free software: you can redistribute it and/or modify
+;; it under the terms of the GNU Affero General Public License as published by
+;; the Free Software Foundation, either version 3 of the License, or
+;; (at your option) any later version.
+
+;; This program is distributed in the hope that it will be useful,
+;; but WITHOUT ANY WARRANTY; without even the implied warranty of
+;; MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+;; GNU Affero General Public License for more details.
+
+;; You should have received a copy of the GNU Affero General Public License
+;; along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
+;; Licensed under the GNU Affero General Public License, version 3 (AGPLv3)
+;; <https://www.gnu.org/licenses/agpl-3.0.en.html>
+
+;;; Commentary:
+
+;; Get info block from #begin_ai and call url-retrieve.  Asynchronous
+;; but only one call per buffer.
+;;
+;;
+;; Main variables: (old)
+;; URL = cui--get-endpoint()  or cui-restapi-con-chat-endpoint,
+;;     cui-restapi-con-completion-endpoint
+;; Headers = cui--get-headers
+;; Token = cui-api-creds-token
+;;
+;; When we create request we count requests, create two timers global
+;;   one and local inside url buffer.
+;; When we receive error or final answer we stop local, recount
+;;   requests and update global.
+;;
+;; Chat mode
+;; - `cui-restapi-request-prepare'
+;; - -> `cui-restapi-prepare-content' (old)
+;; - -> `cui-block-tags-get-content' (new)
+;;
+;; - cui-restapi--url-request
+;; - :message (cui-restapi--collect-chat-messages ...)
+;; - (cui-restapi--normalize-response response) -> (cl-loop for response in normalized
+;;   - (setq role (cui--response-type response))
+;;   - (setq text (decode-coding-string (cui--response-payload response)) 'utf-8)
+;; Completion mode
+;; - :prompt content-string
+;; - (setq text  (decode-coding-string (cui-restapi--get-single-response-text result)
+;;                                     'utf-8))
+
+;; How requests forced to stop with C-g?
+
+;; We save url-buffer with header marker with
+;; `cui-timers--progress-reporter-run' function.  that call:
+;; (cui-timers--set-variable url-buffer header-marker) in
+;; `cui-timers--interrupt-current-request' we remove buffer from
+;; saved and call (cui-restapi--interrupt-url-request url-buffer).
+
+;;; TODO:
+;; - BUG: shut network process when timer expire - kill buffer, remove callback.
+;; - escape #+end_ai after insert of text in block
+;; - add support for several backends, curl, request.el
+
+;; -=-= includes
+(require 'org)
+(require 'org-element)
+(require 'url)
+(require 'url-http)
+(require 'cl-lib)
+(require 'gv) ; for setf
+(require 'json) ; json-read, json-read-from-string, json-encode
+(require 'cui-debug)
+(require 'cui-block)
+(require 'cui-block-msgs) ; for `cui-block-msgs--modify-vector-last-user-content'
+;; (require 'cui-block-tags)
+(require 'cui-timers)
+(require 'cui-async1) ; for `cui-async1-plist-get'
+
+;;; Code:
+;; -=-= Constants, variables
+(defcustom cui-restapi-con-token nil
+  "This is your OpenAI API token.
+If not-nil, store token as a string or may be as a list of key-value:
+\='(:openai token).
+
+You can retrieve it at
+https://platform.openai.com/account/api-keys.
+If  nil, `auth-sources'  file  (with encryption  support)  used to  read
+token.  In such  case the secret should be stored  in the format:
+machine openai password <your token>
+or
+machine openai--0 password <your token>
+machine openai--1 password <your token>"
+  :type '(choice (string :tag "String value")
+                 (plist :tag "Property list (symbol => token string or list of token strings)"
+                        :key-type symbol
+                        :value-type (choice (string :tag "token string")
+                                            (repeat :tag "or list of token strings" string )))
+                 (const :tag "Use auth-source." nil))
+  :group 'cui)
+
+(defcustom cui-restapi-con-service 'openai
+  "Service to use if not specified."
+  :type '(choice (const :tag "OpenAI" openai)
+                 (const :tag "Azure-OpenAI" azure-openai)
+                 (const :tag "perplexity.ai" perplexity.ai)
+                 (const :tag "anthropic" anthropic)
+                 (const :tag "DeepSeek" deepseek)
+                 (const :tag "google" google)
+                 (const :tag "Together" together)
+                 (const :tag "Github" github))
+  :group 'cui)
+
+(defcustom cui-restapi-con-endpoints
+  '(:openai		"https://api.openai.com/v1/chat/completions"
+    :openai-completion	"https://api.openai.com/v1/completions"
+    :perplexity.ai	"https://api.perplexity.ai/chat/completions"
+    :deepseek		"https://api.deepseek.com/v1/chat/completions"
+    :anthropic		"https://api.anthropic.com/v1/messages"
+    :google		"https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"
+    :together		"https://api.together.xyz/v1/chat/completions"
+    :github		"https://models.github.ai/inference/chat/completions")
+  "Endpoints for services.
+This is a not ordered list of key-value pairs in format of List of
+  lists: (SYMBOL VALUE-STRING).  Used for POST HTTP request to service.
+To add service use: (plist-put cui-restapi-con-endpoints :myservice \"http\")."
+  :type '(plist :key-type symbol :value-type string
+                :tag "Plist with Service as a symbol key and Endpoint URL as a string value")
+         :group 'cui)
+
+
+(defcustom cui-restapi-con-model '(:openai "gpt-4o-mini"
+                                   :github "openai/gpt-4.1")
+  "The default model to use.
+See https://platform.openai.com/docs/models for other options.
+If mode is not chat but completion, appropriate model should be set."
+  :type '(choice (string :tag "String value")
+                  (plist :key-type symbol :value-type string :tag "Plist with symbol key and string value"))
+  :group 'cui)
+
+
+(defcustom cui-restapi-openai-known-chat-models '("gpt-5-chat-latest"
+                                                  "gpt-4o-mini"
+                                                  "gpt-4"
+                                                  "gpt-4-32k"
+                                                  "gpt-4-turbo"
+                                                  "gpt-4o"
+                                                  "gpt-4o-mini"
+                                                  "gpt-4o-realtime-preview"
+                                                  "gpt-4o-search-preview"
+                                                  "gpt-4o-mini-search-preview"
+                                                  "gpt-4.1"
+                                                  "gpt-4.1-nano"
+                                                  "gpt-4.1-mini"
+                                                  "gpt-3.5-turbo"
+                                                  "o1"
+                                                  "o1-pro"
+                                                  "o1-preview"
+                                                  "o1-mini"
+                                                  "o3"
+                                                  "o3-mini"
+                                                  "o3-pro"
+                                                  "o4-mini"
+                                                  "chatgpt-4o-latest")
+  "Alist of OpenAI chat models from https://platform.openai.com/docs/models."
+  :type '(alist :key-type string :value-type string)
+  :group 'cui)
+
+(defcustom cui-restapi-default-max-tokens nil
+  "The default maximum number of tokens to generate.
+This is what costs money."
+  :type '(choice (integer :tag "Integer value")
+                 (string :tag "String value")
+                  (const :tag "None" nil))
+  :group 'cui)
+
+(defcustom cui-restapi-add-max-tokens-recommendation t
+  "If non-nil, add to system recomendation about max-token.
+It is recommeded to explicitly repeat to LLM information, such as
+max-token limit.
+Function `cui-restapi--get-length-recommendation' is used to create
+prompt."
+  :type 'boolean
+  :group 'cui)
+
+(defcustom cui-restapi-default-chat-system-prompt "Be helpful."
+  "The system message helps set the behavior of the assistant:
+https://platform.openai.com/docs/guides/chat/introduction.  This
+default prompt is send as the first message before any user (ME)
+or assistant (AI) messages.  Inside a +#begin_ai...#+end_ai block
+you can override it with: '[SYS]: <your prompt>'."
+  :type 'string
+  :group 'cui)
+
+;; (defcustom cui-restapi-default-inject-sys-prompt-for-all-messages nil
+;;   "Wether to add the system prompt before every user message.
+;; By default the system prompt is only added before the first
+;; message.
+;; Get prompt from `cui-restapi-default-chat-system-prompt'.
+;; You can set this to true for a single block using the
+;; :sys-everywhere option on the #+begin_ai block.
+;; This can be useful to enforce the behavior specified by this
+;; messages."
+;;   :type '(choice (const :tag "Before every message" all)
+;;                  (const :tag "Before first" first)
+;;                  (const :tag "Before last" last)
+;;                  (const :tag "Don't add" nil))
+;;   :group 'cui)
+
+
+;; Azure-Openai specific variables
+
+(defcustom cui-restapi-azure-openai-api-base "https://your-instance.openai.azure.com"
+  "Base API URL for Azure-OpenAI."
+  :type 'string
+  :group 'cui)
+
+;; Additional Azure-Openai specific variables
+(defcustom cui-restapi-azure-openai-deployment "azure-openai-deployment-name"
+  "Deployment name for Azure-OpenAI API."
+  :type 'string
+  :group 'cui)
+
+(defcustom cui-restapi-azure-openai-api-version "2023-07-01-preview"
+  "API version for Azure-OpenAI."
+  :type 'string
+  :group 'cui)
+
+(defcustom cui-restapi-anthropic-api-version "2023-06-01"
+  "API version for api.anthropic.com."
+  :type 'string
+  :group 'cui)
+
+(defcustom cui-restapi-show-error-function 'cui-block-insert-result-message
+  "Function to display error in cui-restapi about internal and remote errors.
+Available choices include:
+- `cui-block-insert-result-message' accept message and header-marker parameters.
+To  use  url-buffer,  get header-marker  with  (cui-timers--get-variable
+url-buffer), hence every url-buffer key bound to some ai block variable.
+- `cui-restapi--show-error' ignore header-marker parameter.
+Or provide your own function."
+  :type 'function
+  :options '(cui-block-insert-result-message cui-restapi--show-error)
+  :group 'cui)
+
+(defcustom cui-restapi-links-only-last t
+  "If non-nil, expand links  only in the last user message, otherwise in all.
+Used in `cui-restapi-request-prepare'."
+  :type 'boolean
+  :group 'cui)
+
+
+(defvar-local cui-restapi--current-url-request-callback nil
+  "Internal var that stores the current request callback.
+Called within url request buffer, should know about target position,
+that is why defined as lambda with marker.")
+
+(defvar-local cui-restapi--current-request-is-streamed nil
+  "Whether we expect a streamed response or a single completion payload.")
+
+(defvar-local cui-restapi--url-buffer-last-position-marker nil
+  "Local buffer var to store url-buffer read position.")
+;; (make-variable-buffer-local 'cui-restapi--url-buffer-last-position-marker)
+;; (makunbound 'cui-restapi--url-buffer-last-position-marker)
+
+
+;; -=-= Debugging
+
+(defun cui-restapi--debug-urllib (source-buf)
+  "Copy `url-http' buffer with response to our debugging buffer.
+Argument SOURCE-BUF url-http response buffer."
+  (when (and source-buf (bound-and-true-p cui-debug-buffer))
+    (save-excursion
+      (let* ((buf-exist (get-buffer cui-debug-buffer))
+             (bu (or buf-exist (get-buffer-create cui-debug-buffer))))
+        (with-current-buffer bu
+          (let ((stri (with-current-buffer source-buf
+                        ;; (save-excursion
+                          (buffer-substring-no-properties (or cui-restapi--url-buffer-last-position-marker
+                                                              (point-min))
+                                                          (point-max)))))
+            (goto-char (point-max))
+            (insert "cui-restapi--debug-urllib response:\n")
+            (insert stri)
+            (newline)))))))
+
+;; -=-= Show error
+
+(defun cui-restapi--show-error (error-message &optional _header-marker)
+  "Show an error message in a buffer.
+ERROR-MESSAGE is the error message to show.
+Argument _HEADER-MARKER not used."
+  (condition-case nil
+      (let ((buf (get-buffer-create "*cui error*")))
+        (with-current-buffer buf
+          (read-only-mode -1)
+          (erase-buffer)
+          (insert "Error from the service API:\n\n")
+          (insert error-message)
+          (display-buffer buf)
+          (goto-char (point-min))
+          (toggle-truncate-lines -1)
+          (read-only-mode 1)
+          ;; close buffer when q is pressed
+          (local-set-key (kbd "q") (lambda () (interactive) (kill-buffer)))
+          t))
+    (error nil)))
+
+;; -=-= Get constant functions
+;; TODO: move to block-chat.el max-tokens recommendation (optional?)
+(defun cui-restapi--get-length-recommendation (max-tokens)
+  "Recomendation to limit yourself if MAX-TOKENS is lower 1000.
+Useful for small max-tokens.
+- words = tokens * 0.75
+- tokens = words * 1.33333
+- token = 4 characters
+- word - 5 characters
+- sentence - 15-25 words = 20 words = 26 tokens (tech/academ larger)
+- paragraph - 6 sentences, 500-750 characters,
+              150-300 words = 150 words = 200 tokens
+- page - around 3-4 paragraphs, 500 words = 600 tokens."
+  (when (and max-tokens
+             (< max-tokens 900))
+    (if (< max-tokens 100)
+        (format "Output this before answer: My answer is should be in %d-tokens." (- max-tokens 10))
+      (format "Output this line before answer: I will answer in less than %d-tokens." max-tokens))))
+
+(defun cui-restapi--check-model (model endpoint)
+  "Check if the model name is somehow mistyped.
+MODEL is the model name.  ENDPOINT is the API endpoint."
+  (unless model
+    (error "No cui model specified"))
+
+  (when (or (string-match-p "api.openai.com" endpoint)
+            (string-match-p "openai.azure.com" endpoint))
+
+    (let ((lowercased (downcase model)))
+      (when (and (string-prefix-p "gpt-" model) (not (string-equal lowercased model)))
+        (warn "Model name '%s' should be lowercase. Use '%s' instead." model lowercased)))
+
+    (unless (member model cui-restapi-openai-known-chat-models)
+      (message "Model '%s' is not in the list of available models. Maybe this is because of a typo or maybe we haven't yet added it to the list. To disable this message add (add-to-list 'cui-restapi-openai-known-chat-models \"%s\") to your init file." model model))))
+
+(defun cui-restapi--split-dash-number (str)
+  "Split STR and return list of main string and number after dashes.
+Used to for simple numbering of instances in config."
+  (pcase-let ((`(,a ,b) (string-split str "--")))
+    (and b (string-match-p "\\`[0-9]+\\'" b)
+         (cons a (string-to-number b)))))
+
+
+(defun cui-restapi--openai-service-clear-dashes (service)
+  "Remove --N part from SERVICE if it have such.
+If SERVICE is not a string, just return it."
+  (if (stringp service)
+      (let ((spl (cui-restapi--split-dash-number service)))
+        (if spl (car spl)
+          service))
+    ;; else
+    service))
+
+
+(defun cui-restapi--ensure-keyword (sym)
+  "Return keyword version of SYM suitable for plist keys.
+SYM may be a string, symbol or keywordp."
+  (cond
+   ((keywordp sym) sym)
+   ((symbolp sym) (intern (concat ":" (symbol-name sym))))
+   ((stringp sym)
+    (intern (if (not (string-prefix-p ":" sym))
+                (concat ":" sym)
+              sym)))
+   (t (error "Argument not a symbol or string: %S" sym))))
+
+;; (cui-restapi--ensure-keyword "sym") ; => :sym
+;; (cui-restapi--ensure-keyword ":sym") ; => :sym
+;; (cui-restapi--ensure-keyword :sym) ; => :sym
+;; (cui-restapi--ensure-keyword 'sym) ; => :sym
+
+(defun cui-restapi--get-values (plist key)
+  "KEY can be a keyword or string.
+Return:
+- list with its value (even if nil) - If KEY exists in PLIST.
+- (list nil) - If KEY exists with nil or without value.
+- nil - If KEY does NOT exist."
+  (if (stringp plist)
+      (list plist)
+    ;; else
+    (let* ((search-key (cui-restapi--ensure-keyword key))
+           (marker (make-symbol "cui-not-found"))
+           (val (cui-async1-plist-get plist search-key marker)))
+      (cond ((eq val marker)
+             '())
+          ((and val (listp val))
+           val)
+          (val
+           (list val))
+          (t
+           (list nil))))))
+
+
+(defun cui-restapi--get-values-enhanced (keeper key)
+  "KEY string may have postfix --N.
+Return nil if key not found, else list with value if found.
+Argument KEEPER is a variable with list of key-values."
+  (if (and (stringp keeper) (string-empty-p keeper))
+      nil
+    ;; else
+    (let* ((spl (if (stringp key) (cui-restapi--split-dash-number key))) ; nil or ("github" . 1)
+           (key-number (if spl (cdr spl)))
+           (key (if spl (car spl) key))
+           ;; find key in plist
+           (values (cui-restapi--get-values keeper key))) ; list or one string or ( nil not exist) or list with nil if exist
+      (if (and spl (listp values) key-number)
+          (if (>= key-number (length values))
+              nil
+            ;; else
+            (list (nth key-number values))) ; list with one value
+        ;; else
+        values))))
+
+
+(defun cui-restapi--get-token (service)
+  "Get token or errored.
+Get token from `cui-restapi-con-token' or from auth-source.
+Return nil if SERVICE exist without token, signal error if SERVICE
+not found in tokens."
+  (let ((token (cui-restapi--get-values-enhanced cui-restapi-con-token service)))
+    (cui--debug "cui-restapi--get-token %s %s" service token)
+    (if token
+        (prog1 (setq token (car token)) ; nil or value
+          (when (and token (not (stringp token))) ; check that token is string, not number
+            (user-error "Token in `cui-restapi-con-token' is not string but something other, please check")))
+      ;; else - nil not found or `cui-restapi-con-token' is not defined
+      (prog1 (setq token (cui-restapi--get-token-auth-source service))
+        (when (not token)
+          ;; else - not found in auth-sources and not found or `cui-restapi-con-token' is not defined
+          (cond
+           ((and cui-restapi-con-token (proper-list-p cui-restapi-con-token))
+            (user-error "Token not found in defined plist `cui-restapi-con-token' and in auth sources"))
+           ((and cui-restapi-con-token
+                 (stringp cui-restapi-con-token)
+                 (string-empty-p cui-restapi-con-token))
+            (user-error "`cui-restapi-con-token' is an empty string.  Please set"))
+           (t
+            ;; else no `cui-restapi-con-token'
+            (user-error "Please set `cui-restapi-con-token' to your OpenAI API token or setup auth-source (see cui readme)"))))))))
+
+
+;; (cui-restapi--get-token "github") => first token from list
+;; (cui-restapi--get-token "github--0") => first token from list
+;; (cui-restapi--get-token "local") => nil, exist
+;; (cui-restapi--get-token "local") => error!
+
+
+(defun cui-restapi--strip-api-url (url)
+  "Strip the leading https:// and trailing / from an URL."
+  (let* ((stripped-url
+          ;; Remove "https://" or "http://" if present
+          (cond
+           ((string-prefix-p "https://" url) (substring url 8))
+           ((string-prefix-p "http://" url) (substring url 7))
+           (t url)))
+         (parts (string-split stripped-url "/" t))) ; Split by '/', t means remove empty strings
+    ;; Return the first part, which should be the hostname
+    (car parts)))
+
+(defun cui-restapi--get-token-auth-source (&optional service)
+  "Retrieves the authentication token for the OpenAI SERVICE using auth-source."
+  (require 'auth-source)
+  (let ((service (or service cui-restapi-con-service)))
+    (or (and (stringp service) (auth-source-pick-first-password :host (cui-restapi--openai-service-clear-dashes service)))
+        (auth-source-pick-first-password :host service)
+        (and (stringp service) (auth-source-pick-first-password :host (concat service "--0" ))))))
+
+
+(defun cui-restapi--get-endpoint (messages &optional service)
+  "Correct endpoint based on the SERVICE and type of requst.
+If MESSAGES are provided, type of request is chat, otherwise completion."
+  (cui--debug "cui-restapi--get-endpoint %s %s" messages service)
+  (let* ((service (or (if service
+                          (cui-restapi--openai-service-clear-dashes service))
+                      ;; else
+                      cui-restapi-con-service))
+         (endpoint (car (cui-restapi--get-values cui-restapi-con-endpoints service))))
+    (cond
+     (endpoint endpoint)
+     ((eq service 'azure-openai)
+      (format "%s/openai/deployments/%s%s/completions?api-version=%s"
+              cui-restapi-azure-openai-api-base cui-restapi-azure-openai-deployment
+              (if messages "/chat" "") cui-restapi-azure-openai-api-version))
+     (messages
+      (car (cui-restapi--get-values cui-restapi-con-endpoints :openai)))
+     (t
+      (car (cui-restapi--get-values cui-restapi-con-endpoints :openai-completion))))))
+
+(defun cui-restapi--get-headers (service)
+  "Determine the correct headers based on the SERVICE."
+  (let ((serv (if service
+                  (cui-restapi--openai-service-clear-dashes service)
+                ;; else
+                cui-restapi-con-service))
+        (token (cui-restapi--get-token service)))
+    `(("Content-Type" . "application/json")
+      ;; authentication
+      ,@(cond
+         ((eq serv 'azure-openai)
+          `(("api-key" . ,token)))
+         ((eq serv 'anthropic)
+          `(("x-api-key" . ,token)
+            ("anthropic-version" . ,cui-restapi-anthropic-api-version)))
+         ((eq serv 'google)
+          `(("Accept-Encoding" . "identity")
+            ("Authorization" . ,(encode-coding-string (string-join `("Bearer" ,token) " ") 'utf-8))))
+         (token
+          `(("Authorization" . ,(encode-coding-string (string-join `("Bearer" ,token) " ") 'utf-8))))))))
+
+;; (cui-restapi--get-headers "local")
+
+;; -=-= Prepare content
+;; noweb-control sys-prompt sys-prompt-for-all-messages &optional _info
+(defun cui-restapi-request-prepare (req-type content element model max-tokens top-p temperature frequency-penalty presence-penalty service stream)
+  "Compose API request from data and start a server-sent event stream.
+Call `cui-restapi--url-request' function as a next step.
+Called from `cui-call-block' in main file.
+ELEMENT org-element - is ai block, should be converted to market at
+once.
+- REQ-TYPE symbol - is completion or chat mostly.  Set by
+ `cui-req-type-functions'.
+- CONTENT - chat messages vector or string for old completion mode.
+- MODEL string - is the model to use.
+- MAX-TOKENS integer - is the maximum number of tokens to generate.
+- TEMPERATURE integer - 0-2 lower - low 0.3 high-probability tokens
+ producing predictable outputs.  1.5 diversity by flattening the
+ probability distribution.
+- TOP-P integer - 0-1 lower - chooses tokens whose cumulative
+ probability exceeds this threshold, adapting to context.
+- FREQUENCY-PENALTY integer - -2-2, lower less repeat words.
+- PRESENCE-PENALTY integer - -2-2, lower less repeat concepts.
+- SERVICE symbol or string - is the AI cloud service such as openai or
+ azure-openai.
+- STREAM string - as bool, indicates whether to stream the response."
+  (cui--debug "cui-restapi-request-prepare N0 %s" model stream)
+  (cui--debug "cui-restapi-request-prepare N1" content)
+  (let* ((end-marker (cui-block--get-content-end-marker element))
+         (callback (if (eql req-type 'completion) ; chat - ; set to cui-restapi--current-url-request-callback
+                       ;; completion mode
+                       (lambda (result) (cui-block--insert-single-response end-marker
+                                                                           (cui-restapi--get-single-response-text result)
+                                                                           nil))
+                     ;; else - chat mode - RESULT is JSON in plist format (decoded by `cui-restapi--json-safe-decoding')
+                     (if stream
+                         (lambda (result) (cui-block--insert-stream-response end-marker
+                                                                             (cui-restapi--normalize-response result) ; [DONE] is ignored. we use "finish_reason":"stop" instead.
+                                                                             t))
+                       ;; else - not stream
+                       (lambda (result) (cui-block--insert-single-response end-marker
+                                                                           (cui-restapi--get-single-response-text result)
+                                                                           t))))))
+    ;; - Call and save buffer.
+    (cui-timers--set
+     (cui-restapi--url-request service model callback
+                          :prompt (when (eql req-type 'completion) content) ; if completion - string
+                          :messages (when (not (eql req-type 'completion)) content) ; chat - vector
+                          :max-tokens max-tokens
+                          :temperature temperature
+                          :top-p top-p
+                          :frequency-penalty frequency-penalty
+                          :presence-penalty presence-penalty
+                          :stream stream)
+     (cui-block-get-header-marker element))
+    ;; - run timer that show /-\ looping, notification of status
+    (cui-timers--progress-reporter-run
+     #'cui-restapi--interrupt-url-request)))
+
+;; -=-= Normalize, cui-restapi--url-request
+
+;; Together.xyz 2025
+;; '(id "nz7KyaB-3NKUce-9539d1912ce8b148" object "chat.completion" created 1750575101 model "meta-llama/Llama-3.3-70B-Instruct-Turbo-Free" prompt []
+;;   choices [(finish_reason "length" seed 3309196889559996400 logprobs nil index 0
+;;             message (role "assistant" content " The answer is simple: live a long time. But how do you do that? Well, itâs not as simple as it sounds." tool_calls []))] usage (prompt_tokens 5 completion_tokens 150 total_tokens 155 cached_tokens 0))
+
+(defun cui-restapi--get-single-response-text (&optional response)
+  "Return text from RESPONSE or nil and signal error if it have \"error\" field.
+RESPONSE is JSON with reply for not-stream request in plist format.
+For Completion LLM mode. Used as callback for `cui-restapi--url-request'.
+Same to `cui-restapi--normalize-response' that used for stream.
+We use separate version, because streaming is complicated,
+but we will keep them interchangable.
+Result used for `cui-block--insert-single-response'.
+Error should be handled before calling this function in
+ `cui-restapi--url-maybe-show-request-error'.
+Return text of message."
+  (when response
+    (cui--debug "cui-restapi--get-single-response-text response:" response)
+    (if-let ((err-obj (plist-get response 'error)))
+        (let ((mes (or (plist-get err-obj 'message)
+                           err-obj)))
+            (error mes)) ; not used
+      ;; else - no "error" field
+      (if-let* ((choice (aref (plist-get response 'choices) 0))
+                (text (or (plist-get choice 'text)
+                          ;; Together.xyz, Github
+                          (plist-get (plist-get choice 'message) 'content))))
+          ;; - Decode text
+          (decode-coding-string text 'utf-8)))))
+
+
+
+;; Here is an example for how a full sequence of OpenAI responses looks like:
+;; '((id "chatcmpl-9hM1UJgWe4cWKcJKvoMBzzebOOzli" object "chat.completion.chunk" created 1720119788 model "gpt-4o-2024-05-13" system_fingerprint "fp_d576307f90" choices [(index 0 delta (role "assistant" content "") logprobs nil finish_reason nil)])
+;;   (id "chatcmpl-9hM1UJgWe4cWKcJKvoMBzzebOOzli" object "chat.completion.chunk" created 1720119788 model "gpt-4o-2024-05-13" system_fingerprint "fp_d576307f90" choices [(index 0 delta (content "Hello") logprobs nil finish_reason nil)])
+;;   (id "chatcmpl-9hM1UJgWe4cWKcJKvoMBzzebOOzli" object "chat.completion.chunk" created 1720119788 model "gpt-4o-2024-05-13" system_fingerprint "fp_d576307f90" choices [(index 0 delta (content ",") logprobs nil finish_reason nil)])
+;;   (id "chatcmpl-9hM1UJgWe4cWKcJKvoMBzzebOOzli" object "chat.completion.chunk" created 1720119788 model "gpt-4o-2024-05-13" system_fingerprint "fp_d576307f90" choices [(index 0 delta (content " Robert") logprobs nil finish_reason nil)])
+;;   (id "chatcmpl-9hM1UJgWe4cWKcJKvoMBzzebOOzli" object "chat.completion.chunk" created 1720119788 model "gpt-4o-2024-05-13" system_fingerprint "fp_d576307f90" choices [(index 0 delta nil logprobs nil finish_reason "stop")])
+;;   nil)
+;;
+;; and Anthropic:
+;; '((type "message_start" message (id "msg_01HoMq4LgkUpHpkXqXoZ7R1W" type "message" role "assistant" model "claude-3-5-sonnet-20240620" content [] stop_reason nil stop_sequence nil usage (input_tokens 278 output_tokens 2)))
+;;   (type "content_block_start" index 0 content_block (type "text" text ""))
+;;   (type "ping")
+;;   (type "content_block_delta" index 0 delta (type "text_delta" text "Hello Robert"))
+;;   (type "content_block_delta" index 0 delta (type "text_delta" text "."))
+;;   (type "content_block_stop" index 0)
+;;   (type "message_delta" delta (stop_reason "end_turn" stop_sequence nil) usage (output_tokens 22))
+;;   (type "message_stop"))
+;;
+;; and Google
+;; '((created 1745008491
+;;    model "gemini-2.5-pro-preview-03-25"
+;;    object "chat.completion.chunk"
+;;    choices [(delta (content "Hello Robert! How can I help you today?"
+;;                     role "assistant")
+;;              finish_reason "stop"
+;;              index 0)]))
+(defun cui-restapi--normalize-response (response)
+  "This function normalizes JSON data in OpenAI-style but with some differences.
+RESPONSE is plist is one JSON message of the stream response as a chunk of full
+response.
+Return list or responses, with every response as `cui-block--response'."
+  ;; (cui--debug "response:" response)
+  (if-let ((error-message (plist-get response 'error)))
+      (list (make-cui-block--response :type 'error :payload (or (plist-get response 'message) error-message)))
+
+    (let ((response-type (plist-get response 'type)))
+
+      ;; first try anthropic
+      (cond
+       ((string= response-type "ping") nil)
+       ((string= response-type "message_start")
+        (when-let ((role (plist-get (plist-get response 'message) 'role)))
+          (list (make-cui-block--response :type 'role :payload role))))
+       ((string= response-type "content_block_start")
+        (when-let* ((text (plist-get (plist-get response 'content_block) 'text))
+                    (text (when text (decode-coding-string (encode-coding-string text 'utf-8 't) 'utf-8))))
+          (list (make-cui-block--response :type 'text :payload text))))
+       ((string= response-type "content_block_delta")
+        (when-let* ((text (plist-get (plist-get response 'delta) 'text))
+                    (text (when text (decode-coding-string (encode-coding-string text 'utf-8 't) 'utf-8))))
+          (list (make-cui-block--response :type 'text :payload text))))
+       ((string= response-type "content_block_stop") nil)
+       ((string= response-type "message_delta")
+        (when-let* ((stop-reason (plist-get (plist-get response 'delta) 'stop_reason))
+                    (stop-reason (when stop-reason (decode-coding-string (encode-coding-string stop-reason 'utf-8 't) 'utf-8))))
+          (list (make-cui-block--response :type 'stop :payload stop-reason))))
+       ((string= response-type "message_stop") nil)
+
+
+       ;; try perplexity.ai
+       ((and (plist-get response 'model) (string-prefix-p "llama-" (plist-get response 'model)))
+        (let ((choices (plist-get response 'choices)))
+          (when (and choices (> (length choices) 0))
+            (let* ((choice (aref choices 0))
+                   (mes (plist-get choice 'message))
+                   (delta (plist-get choice 'delta))
+                   (role (or (plist-get delta 'role) (plist-get mes 'role)))
+                   (text (or (plist-get delta 'content) (plist-get mes 'content)))
+                   (finish-reason (plist-get choice 'finish_reason)))
+              (append
+               (when role
+                 (list (make-cui-block--response :type 'role :payload role)))
+               (when text
+                 (setq text (decode-coding-string (encode-coding-string text 'utf-8 't) 'utf-8))
+                 (list (make-cui-block--response :type 'text :payload text)))
+               (when finish-reason
+                 (list (make-cui-block--response :type 'stop :payload finish-reason))))))))
+
+       ;; single message e.g. from non-streamed completion. Repeat `cui-restapi--get-single-response-text'
+       ((let ((choices (plist-get response 'choices)))
+          (and (= 1 (length choices))
+               (plist-get (aref choices 0) 'message)))
+        (let* ((choices (plist-get response 'choices))
+               (choice (aref choices 0))
+               (text (plist-get (plist-get choice 'message) 'content))
+               (text (when text (decode-coding-string (encode-coding-string text 'utf-8 't) 'utf-8)))
+               (role (plist-get (plist-get choice 'message) 'role))
+               (finish-reason (or (plist-get choice 'finish_reason) 'stop)))
+          (list (make-cui-block--response :type 'role :payload role)
+                (make-cui-block--response :type 'text :payload text)
+                (make-cui-block--response :type 'stop :payload finish-reason))))
+
+       ;; try openai, deepseek, gemini streamed
+       (t (let ((choices (plist-get response 'choices)))
+            (cl-loop for choice across choices
+                     append (let* ((delta (plist-get choice 'delta))
+                                   (role (when-let ((role (plist-get delta 'role)))
+                                           (if (and (string= "assistant" role)
+                                                    (plist-get delta 'reasoning_content))
+                                               "assistant_reason"
+                                             role)))
+                                   (text (plist-get (plist-get choice 'delta) 'content))
+                                   (text (when text (decode-coding-string (encode-coding-string text 'utf-8 't) 'utf-8)))
+                                   (reasoning-text (plist-get delta 'reasoning_content))
+                                   (reasoning-text (when reasoning-text (decode-coding-string (encode-coding-string reasoning-text 'utf-8 't) 'utf-8)))
+                                   (finish-reason (plist-get choice 'finish_reason))
+                                   (result nil))
+                              (when finish-reason
+                                (push (make-cui-block--response :type 'stop :payload finish-reason) result))
+                              (when (and reasoning-text (> (length reasoning-text) 0))
+                                ;; (setq cui-restapi--currently-reasoning t)
+                                (push (make-cui-block--response :type 'text :payload reasoning-text) result))
+                              (when (and text (> (length text) 0))
+                                (push (make-cui-block--response :type 'text :payload text) result))
+                                ;; (when cui-restapi--currently-reasoning
+                                ;;   (setq cui-restapi--currently-reasoning nil)
+                                ;;   (push (make-cui-block--response :type 'role :payload "assistant") result)))
+                              (when role
+                                (push (make-cui-block--response :type 'role :payload role) result))
+                              result))))))))
+
+;; cui-restapi-request
+(cl-defun cui-restapi--url-request (service model callback &optional &key prompt messages max-tokens temperature top-p frequency-penalty presence-penalty stream)
+  "Use API to LLM to request and get response.
+Executed by `cui-restapi-request-prepare'
+PROMPT is string with the query for completions.
+MESSAGES is vector or list with plist containing :role user and :content
+ with request for chat.
+CALLBACK is the callback function.
+MODEL is the
+model to use.
+MAX-TOKENS is the maximum number of tokens to generate.
+TEMPERATURE is the temperature of the distribution.
+TOP-P is the top-p value.
+FREQUENCY-PENALTY is the frequency penalty.
+PRESENCE-PENALTY is the presence penalty.
+Variables used to save state:
+not buffer local:
+buffer local and nil by default:
+- `cui-block--current-insert-position-marker' - in url callback to
+  track where we insert.
+- `cui-block--current-chat-role'
+For `cui-restapi--url-request-on-change-function':
+- `cui-restapi--current-request-is-streamed'
+- `cui-restapi--current-url-request-callback'.
+
+Parallel requests require to keep `url-request-buffer'
+to be able  to kill it.  We  solve this by creating timer  in buffer with
+name of url-request-buffer +1.
+We count running ones in global integer only.
+
+For not stream url return event and hook `after-change-functions'
+ triggered only after url buffer already kill, that is why we don't use
+ this hook.  For not stream we process data directly in callback.
+Use argument SERVICE to find endpoint, MODEL as parameter to request."
+  ;; - HTTP body preparation as a string
+  (let ((endpoint (cui-restapi--get-endpoint messages service))
+        ;; url.el special variables:
+        (url-request-extra-headers (cui-restapi--get-headers service))
+        (url-request-method "POST")
+        (url-request-data
+         (encode-coding-string (json-encode
+                                (cui-restapi--payload :prompt prompt
+					              :messages messages
+					              :model model
+					              :max-tokens max-tokens
+					              :temperature temperature
+					              :top-p top-p
+					              :frequency-penalty frequency-penalty
+					              :presence-penalty presence-penalty
+					              :service service
+					              :stream stream))
+                               'utf-8)))
+    ;; - regex check
+    (if model
+        (cui-restapi--check-model model endpoint)) ; not empty and if "api.openai.com" or "openai.azure.com"
+    (cui--debug "cui-restapi--url-request service and (type-of service): %s %s" service (type-of service))
+    (cui--debug "cui-restapi--url-request endpoint and (type-of endpoint): %s %s" endpoint (type-of endpoint))
+    (cui--debug "cui-restapi--url-request headers: %s" url-request-extra-headers)
+    (cui--debug "cui-restapi--url-request request-data:" (cui-debug--prettify-json-string url-request-data))
+
+
+    (cui--debug "Main request before, that return a \"urllib buffer\".")
+    (let ((url-request-buffer
+           (url-retrieve ; <- - - - - - - - -  MAIN
+            endpoint
+            (lambda (_events)
+              (cui--debug "cui-restapi--url-request in event" (current-buffer) cui-restapi-show-error-function)
+              ;; "Called within url-request-buffer after `after-change-functions'"
+              ;; debug
+              (let (cui-restapi--url-buffer-last-position-marker)
+                (cui-restapi--debug-urllib (current-buffer)))
+              ;; error handling and not-stream insert
+              (unwind-protect
+                  (when (and (boundp 'url-http-end-of-headers) url-http-end-of-headers)
+                      (unless (cui-restapi--url-maybe-show-request-error) ; t if error
+                        (unless stream
+                          (goto-char url-http-end-of-headers)
+                          ;; insert [ME]
+                          (funcall cui-restapi--current-url-request-callback
+                                   (cui-restapi--json-safe-decoding (buffer-substring-no-properties (point) (point-max))))
+                          ;; (funcall cui-restapi--current-url-request-callback nil)
+                          )))
+
+
+                ;; finally stop track buffer, error or not
+                (cui-timers--interrupt-current-request (current-buffer) #'cui-restapi--stop-tracking-url-request)
+                ;; (cui-timers--interrupt-current-request (current-buffer) #'cui-restapi--interrupt-url-request)
+                )))))
+
+      (cui--debug "Main request after." url-request-buffer)
+
+      ;; - Set global bariable for functions that called within request-buffer
+      (with-current-buffer url-request-buffer
+        ;; - it is `cui-block--insert-stream-response' or `cui-block--insert-single-response'
+        (setq-local cui-restapi--current-url-request-callback callback)
+        ;; - `cui-restapi--url-request-on-change-function', `cui-restapi--current-request-is-streamed'
+        (setq-local cui-restapi--current-request-is-streamed stream)
+
+        ;; - set current global value as permanent in local buffer.
+        (set (make-local-variable 'cui-restapi-show-error-function) (symbol-value 'cui-restapi-show-error-function))
+        (cui--debug "cui-restapi--url-request " cui-restapi-show-error-function)
+
+        ;; - for stream add hook, otherwise remove - do word by word output (optional actually)
+        (if stream
+            (unless (member 'cui-restapi--url-request-on-change-function after-change-functions)
+              (add-hook 'after-change-functions #'cui-restapi--url-request-on-change-function nil t))
+          ;; else - not stream
+          (remove-hook 'after-change-functions #'cui-restapi--url-request-on-change-function t)))
+      url-request-buffer)))
+
+;; -=-= cui-restapi--url-request-slim
+(cl-defun cui-restapi--url-request-slim (service model callback &optional &key prompt messages max-tokens temperature top-p frequency-penalty presence-penalty)
+  "Simplified version of `cui-restapi--url-request' without stream support.
+Used for building agents or chain of requests.
+Call CALLBACK called from callback of `url-retrieve' with nil or result of
+`cui-restapi--normalize-response' of response.
+Use argument SERVICE to find endpoint, MODEL as parameter to request.
+Call CALLBACK at receive.  Call CALLBACK with nil if error.
+One of argument PROMPT and MESSAGES used as main payload.
+For MAX-TOKENS, TEMPERATURE, TOP-P, FREQUENCY-PENALTY, PRESENCE-PENALTY,
+see `cui-restapi-request-prepare'."
+  (cui--debug "cui-restapi--url-request-slim 1) %s %s %s" (current-buffer) service cui-restapi-con-token)
+  (let ((url-request-extra-headers (cui-restapi--get-headers service))
+        (url-request-method "POST")
+        (endpoint (cui-restapi--get-endpoint messages service))
+        (url-request-data
+         (encode-coding-string (json-encode
+                                (cui-restapi--payload :prompt prompt
+					              :messages messages
+					              :model model
+					              :max-tokens max-tokens
+					              :temperature temperature
+					              :top-p top-p
+					              :frequency-penalty frequency-penalty
+					              :presence-penalty presence-penalty
+					              :service service
+					              :stream nil))
+                               'utf-8)))
+    (cui--debug "cui-restapi--url-request-slim 2) prompt: %s" prompt)
+    (cui--debug "cui-restapi--url-request-slim 3) messages: %s" messages)
+    (cui--debug "cui-restapi--url-request-slim 4) endpoint: %s %s" endpoint (type-of endpoint))
+    (cui--debug "cui-restapi--url-request-slim 5) request-data:" (cui-debug--prettify-json-string url-request-data))
+
+    ;; (setq url-request-buffer
+    (url-retrieve ; <- - - - - - - - -  MAIN
+     endpoint
+     (lambda (events)
+       "cui-restapi--url-request-slim main callback."
+       (cui--debug "cui-restapi--url-request-slim 6) *url-retrieve callback*:" events)
+       ;; debug
+       (let (cui-restapi--url-buffer-last-position-marker)
+         (cui-restapi--debug-urllib (current-buffer)))
+       ;;
+       (if (cui-restapi--url-maybe-show-request-error) ; TODO: change to RESULT by global customizable option
+           (funcall callback nil) ; signal error to callback
+         ;; else - read from url-buffer
+         (when (and (boundp 'url-http-end-of-headers) url-http-end-of-headers)
+           ;; (save-excursion
+           (goto-char url-http-end-of-headers)
+           (cui--debug "cui-restapi--url-request-slim 7) " url-http-end-of-headers)
+
+           (let ((data (cui-restapi--json-safe-decoding (buffer-substring-no-properties (point) (point-max)))))
+             (when data
+               (funcall callback (cui-restapi--get-single-response-text data))))))))))
+
+;; - Test!
+;; (let ((service 'together)
+;;       (model "meta-llama/Llama-3.3-70B-Instruct-Turbo-Free")
+;;       (max-tokens 10)
+;;       (temperature nil)
+;;       (top-p nil)
+;;       (frequency-penalty nil)
+;;       (presence-penalty nil))
+;;   (cui-timers--progress-reporter-run
+;;    1
+;;    (lambda (buf) (cui-timers--interrupt-current-request buf #'cui-restapi--interrupt-url-request))
+;;    (cui-restapi--url-request-slim service model (lambda (result)
+;;                                            (cui-timers--interrupt-current-request (current-buffer) #'cui-restapi--stop-tracking-url-request)
+;;                                            (print (list "hay" result)))
+;;                            :timeout 20
+;;                            :messages  (vector (list :role 'system :content "You a helpful.")
+;;                                               (list :role 'user :content "How to do staff?"))
+;;                            :max-tokens max-tokens
+;;                            :temperature temperature
+;;                            :top-p top-p
+;;                            :frequency-penalty frequency-penalty
+;;                            :presence-penalty presence-penalty)))
+
+
+(cl-defun cui-restapi-request-llm-retries (service model timeout callback &optional &key retries prompt messages header-marker max-tokens temperature top-p frequency-penalty presence-penalty)
+  "`cui-restapi--url-request-slim' function with TIMEOUT and RETRIES.
+Only one request per ai block is allowed at one time.
+Timer function restart requst and restart timer with attempts-1.
+In callback we add cancel timer function.
+We save and cancel time only in callback.
+- TIMER is time to wait for one request.
+Opetional arguments:
+- MESSAGES - is vector of messages for chat reques type.
+Use argument SERVICE to find endpoint, MODEL as parameter to request.
+How? we restart request if
+1.  url-buffer is alive - hanged - in timer - in timer we check
+url-buffer is alive.
+2. url returned error, we check it in callback.
+We store url-buf with marker of header in cui-timers.el"
+  (cui--debug "cui-restapi-request-llm-retries0 timeout %s" timeout)
+  (with-current-buffer (marker-buffer header-marker)
+    ;; (let* (
+    ;;       ;; prepare request - apply tags to message
+    ;;       (messages (cui-block-msgs--modify-vector-content messages #'cui-block-tags-replace 'user))
+    ;;       (messages (cui-block-msgs--modify-vector-content messages #'cui-block-tags--clear-properties 'user))
+    ;;       (messages (cui-block--pipeline cui-restapi-after-prepare-messages-hook messages)))
+      (when (or (and retries (> retries 0))
+                (not retries))
+        (cui--debug "cui-restapi-request-llm-retries1 %s" (current-buffer))
+        ;; - 1) run timer
+        (let* ((left-retries (if retries (1- retries) 3))
+               ;; run timer in temp buffer - to limit request by timeout, and kill url-buffer
+               ;; we start timer first because we pass it to callback to stop timer itself
+               (timer (run-with-timer timeout
+                                      0
+                                      (lambda ()
+                                        "Suppress errors, they don't visible."
+                                        (cui--debug "timer of cui-restapi-request-llm-retries"
+                                                    left-retries
+                                                    (cui-timers--get-keys-for-variable header-marker)
+                                                    (seq-find (lambda (x) (buffer-live-p  x)) (cui-timers--get-keys-for-variable header-marker)))
+                                        ;; - get url-buffer to check if it hanging.
+                                        (let ((urlbuf (seq-find (lambda (x) (buffer-live-p x))
+                                                                (cui-timers--get-keys-for-variable header-marker))))
+                                          ;; (with-current-buffer tmp-buf
+                                          (cui--debug "timer of cui-restapi-request-llm-retries, buf3: %s %s" (current-buffer) urlbuf)
+                                          ;; - Main action of timer: interrupt request
+                                          (when urlbuf
+                                            (cui-timers--interrupt-current-request urlbuf #'cui-restapi--interrupt-url-request)
+                                            (cui--debug "in cui-restapi-request-llm-retries WE SHOULD RESTART HERE1")
+
+                                            ;; - retry if request was hanging
+                                            ;; - restart
+                                            (if (> left-retries 0)
+                                                ;; also save url-buffer
+                                                (cui-restapi-request-llm-retries service model timeout callback
+                                                                                 :retries left-retries
+                                                                                 :messages messages
+                                                                                 :max-tokens max-tokens
+                                                                                 :header-marker header-marker
+                                                                                 :temperature temperature
+                                                                                 :top-p top-p
+                                                                                 :frequency-penalty frequency-penalty
+                                                                                 :presence-penalty presence-penalty)
+                                              ;; else - failed
+                                              (run-at-time 0 nil callback nil)
+                                              (cui-block-insert-result-message "Failed" header-marker))
+                                            (cui--debug "timer of cui-restapi-request-llm-retries 1111")
+                                            (cui-timers--update-global-progress-reporter))))))
+
+               (url-buffer
+                (progn
+                  (cui--debug "cui-restapi-request-llm-retries2 %s" (current-buffer))
+                  ;; - 2) make request
+                  (cui-restapi--url-request-slim service model
+                                           (lambda (result-llm)
+                                             (cui--debug "cui-restapi--url-request-slim callback1, result: %s" result-llm)
+                                             (if timer
+                                                 (cancel-timer timer))
+                                             (cui--debug "cui-restapi--url-request-slim  callback2")
+                                             ;; (with-current-buffer cb
+                                             (cui--debug "cui-restapi--url-request-slim  callback3 %s" result-llm)
+                                             (if result-llm
+                                                 (progn
+                                                   (cui--debug "cui-restapi--url-request-slim here")
+                                                   (run-at-time 0 nil callback result-llm))
+                                               ;; else - nil returned - error - retry
+                                               (if (> left-retries 0)
+                                                   (progn
+                                                     ;; cui-restapi--url-request-slim
+                                                    (cui--debug "cui-restapi--url-request-slim here2")
+                                                    ;; retrie after 3 sec
+                                                    (run-at-time 3 nil (lambda () (cui-restapi-request-llm-retries service model timeout callback
+                                                                                                                   :retries left-retries
+                                                                                                                   :messages messages
+                                                                                                                   :max-tokens max-tokens
+                                                                                                                   :header-marker header-marker
+                                                                                                                   :temperature temperature
+                                                                                                                   :top-p top-p
+                                                                                                                   :frequency-penalty frequency-penalty
+                                                                                                                   :presence-penalty presence-penalty))))
+                                                 ;; else - failed
+                                                 (cui--debug "cui-restapi--url-request-slim failed")
+                                                 (run-at-time 0 nil callback nil)
+
+                                                 (cui-block-insert-result-message "Failed" header-marker)
+
+                                                 (cui-timers--update-global-progress-reporter)))
+
+                                             (cui--debug "cui-restapi--url-request-slim  callback4"))
+                                           :prompt prompt
+                                           :messages  messages
+                                           :max-tokens max-tokens
+                                           :temperature temperature
+                                           :top-p top-p
+                                           :frequency-penalty frequency-penalty
+                                           :presence-penalty presence-penalty))))
+          ;; save url-buffer
+          (cui--debug "cui-restapi-request-llm-retries3" cui-timers--element-marker-variable-dict)
+          (cui-timers--set url-buffer header-marker)
+          (cui--debug "cui-restapi-request-llm-retries4" cui-timers--element-marker-variable-dict)))))
+
+;; -=-= error, payload, url-request-on-change-function
+
+(defun cui-restapi--url-maybe-show-request-error ()
+  "If the API request returned an error, show it.
+`REQUEST-BUFFER' is the buffer containing the request.
+If http-code is nil - C\\-g was used to stop all.
+Return t if error happen, otherwise nil.
+If C\\-g was used return nil.
+Uses global variable `cui-restapi-show-error-function'.
+Should be executed in url-buffer only."
+  (cui--debug "cui-restapi--url-maybe-show-request-error1")
+  (save-excursion ; ??
+    (let ((http-code (url-http-symbol-value-in-buffer 'url-http-response-status (current-buffer))) ; should be integer, but may not be
+          (http-data (if (and (boundp 'url-http-end-of-headers) url-http-end-of-headers)
+                         ;; get data after HTTP headers from current url buffer
+                         (progn
+                           (string-trim (buffer-substring-no-properties url-http-end-of-headers
+                                                                        (point-max))))
+                       ;; else
+                       ""))
+          (http-header-first-line (buffer-substring-no-properties (point-min)
+                                                                  (save-excursion
+                                                                    (goto-char (point-min))
+                                                                    (line-end-position))))
+          ret)
+      (unless (numberp http-code)
+        (setq http-code nil))
+      (cui--debug "cui-restapi--url-maybe-show-request-error2 %s" http-code)
+      (when (boundp 'url-http-end-of-headers)
+        (cui--debug "cui-restapi--url-maybe-show-request-error22 %s " url-http-end-of-headers))
+      (setq ret
+            (or
+             (when (and http-code (/= http-code 200))
+               (cui--debug "cui-restapi--url-maybe-show-request-error3")
+               (funcall cui-restapi-show-error-function (format "HTTP Error from the service: %s %s \n %s" http-code http-data http-header-first-line)
+                        (cui-timers--get-variable (current-buffer))) ; header-marker
+               t)
+             (when (and (boundp 'url-http-end-of-headers) url-http-end-of-headers)
+               (goto-char url-http-end-of-headers)
+               (condition-case nil
+                   (when-let* ((body (json-read))
+                               (err (or (alist-get 'error body)
+                                        (plist-get body 'error)))
+                               (mes (or (alist-get 'message err)
+                                        (plist-get err 'message)))
+                               (mes (if (and mes (not (string-blank-p mes)))
+                                        mes
+                                      (json-encode err))))
+                     (funcall cui-restapi-show-error-function (concat (format "%s\n" http-header-first-line)
+                                                                      "Error from the service API:\n\t" mes)
+                              (cui-timers--get-variable (current-buffer)))) ; header-marker
+                 (error nil)))))
+      (cui--debug "cui-restapi--url-maybe-show-request-error3 %s" ret)
+      ret)))
+
+
+;; -=-= @image:/path.jpg to base64 payload
+
+(defun cui-restapi--chunk-around-pattern (pattern str)
+  "Split STR into pairs (outside . match) using regex PATTERN as delimiter.
+PATTERN should may have match groups 1,2,3 or less.
+\"match\" is a list of substrings groups 1,2,3 matched, may be nil, but if
+ one of group was found it will have all 1,2,3 nils.
+\"outside\" is text before found patter in STR or empty string.
+Dont throw error if pattern was matched but not fully, should be checked
+ by caller.
+Return list of cons or nil."
+  (let ((start 0)
+        chunks)
+    (while (string-match pattern str start)
+      (push (cons (substring str start (match-beginning 0))
+                  (list (match-string 1 str) (match-string 2 str) (match-string 3 str)))
+            chunks)
+      ;; all groups should exist, disabled: block patter to 123 only
+      ;; (unless (and (match-string 1 str) (match-string 2 str) (match-string 3 str))
+      ;;   (user-error "One of group 123 is not found for pattern: \"%s\" in string: \"%s\"" pattern str))
+      (setq start (match-end 0)))
+    ;; Remaining tail after last match, with inside ""
+    (when (< start (length str))
+      (push (cons (substring str start) nil) chunks))
+    (unless (= start 0) ; not found
+      (nreverse chunks))))
+
+(defconst cui-restapi--multimodal-internal-link-re "@\\(image\\|audio\\)-\\([^:]+\\):\\([^ \t\n\r]+\\)"
+  "Bound with hardcoded links in `cui-block-tags--compose-block-for-path-full'.")
+
+(defun cui-restapi--replace-multimodal (string)
+  "Replace @image/audo-format:/path in STRING with multimodal blocks."
+  (let* ((items (cui-restapi--chunk-around-pattern cui-restapi--multimodal-internal-link-re string))
+         ret paths desc match)
+    (if (not items) ; links was not found
+        string
+      (dolist (item items)
+        (setq desc (string-trim (car item)))
+        (setq match (cdr item)) ;; (class format path)
+
+        ;; 1. Merge or Push Text Description
+        (unless (string-empty-p desc)
+          ;; if previous message was text, image/audio was repeated and skipped
+          (if (equal (plist-get (car ret) :type) "text")
+              (plist-put (car ret) :text (concat (plist-get (car ret) :text) "\nSee media above.\n" desc))
+            (push (list :type "text" :text desc) ret)))
+
+        ;; 2. Handle Media Path
+        (when match
+          (let ((class  (nth 0 match)) ; image
+                (format (nth 1 match)) ; jpeg
+                (path   (nth 2 match))) ; /a.jpg
+            (cui--debug "cui-restapi--replace-multimodal %s %s %s" class format path)
+            (unless (and class format path)
+                (user-error "One of group 123 is not found for pattern: \"%s\" in string: \"%s\"" cui-restapi--multimodal-internal-link-re string))
+            (unless (or (string-empty-p path) (member path paths))
+              (push path paths)
+              (with-temp-buffer
+                (insert-file-contents-literally path)
+                (push (if (string= class "image")
+                          (list :type "image_url"
+                                :image_url (list :url (format "data:image/%s;base64,%s"
+                                                              format
+                                                              (base64-encode-string (buffer-string) t))))
+                        ;; (cui-restapi--image-file-to-imageurl path)
+                        ;; Else: Audio structure
+                        (list :type "input_audio"
+                              :input_audio (list :data (base64-encode-string (buffer-string) t)
+                                                 :format format)))
+                      ret))))))
+      (vconcat (reverse ret)))))
+
+;; -=-= payload
+
+(cl-defun cui-restapi--payload (&optional &key service model prompt messages max-tokens temperature top-p frequency-penalty presence-penalty stream)
+  "Create the payload for the OpenAI API.
+SERVICE used to get default model.
+PROMPT is string with the query for completions.
+MESSAGES is vector or list with plist containing :role user and :content
+ with request for chat.
+MODEL is the model to use.
+MAX-TOKENS is the maximum number of tokens to generate.
+TEMPERATURE is the temperature of the distribution.
+TOP-P is the top-p value.
+FREQUENCY-PENALTY is the frequency penalty.
+PRESENCE-PENALTY is the presence penalty.
+STREAM is a boolean indicating whether to stream the response.
+Return list of cons with messages as vector and with stream bool."
+  (cui--debug "cui-restapi--payload messages N1:" (pp-to-string messages))
+  (cui--debug "cui-restapi--payload service:" service)
+  (let (extra-system-prompt
+        max-completion-tokens
+        (messages (when messages (vconcat messages)))) ; enshure messages is vector
+
+    ;; enshure that :content is vector or string
+    (when messages
+      (let (msg content)
+       (dotimes (idx (length messages)) ; loop
+         (setq msg (aref messages idx))
+         (setq content (plist-get msg :content))
+         (when (listp content)
+           (plist-put (aref messages idx) :content (vconcat content))))))
+
+    ;; replace @image/path.jpg to base64
+    (setq messages (cui-block-msgs--modify-vector-last-user-content messages
+                                                                    #'cui-restapi--replace-multimodal
+                                                                    nil))
+
+    (when (eq service 'anthropic)
+      (when (string-equal (plist-get (aref messages 0) :role) "system")
+        (setq extra-system-prompt (plist-get (aref messages 0) :content))
+        (cl-shiftf messages (cl-subseq messages 1)))
+      (setq max-tokens (or max-tokens 4096)))
+
+    ;; o1 models currently does not support system prompt
+    (when (and (or (eq service 'openai) (eq service 'azure-openai))
+               (or (string-prefix-p "o1" model) (string-prefix-p "o3" model)))
+      (setq messages (cl-remove-if (lambda (msg) (string-equal (plist-get msg :role) "system")) messages))
+      ;; o1 does not support max-tokens
+      (when max-tokens
+        (setq max-tokens nil)
+        (setq max-completion-tokens (or max-tokens 128000))))
+
+    (cui--debug "cui-restapi--payload stream: %s" stream)
+    ;; (cui--debug "cui-restapi--payload messages N2:" (pp-to-string messages))
+
+    (let* ((input (if messages `(messages . ,messages) `(prompt . ,prompt)))
+           ;; TODO yet unsupported properties: n, stop, logit_bias, user
+           ;; (stream . ,stream)
+           (data (map-filter (lambda (x _) x)
+                             `(,input
+                               ,@(when model                 `((model . ,model)))
+                               ,@(if stream                 `((stream . ,stream)) '((stream . :json-false)))
+                               ,@(when max-tokens            `((max_tokens . ,max-tokens)))
+                               ,@(when max-completion-tokens `((max-completion-tokens . ,max-completion-tokens)))
+                               ,@(when temperature           `((temperature . ,temperature)))
+                               ,@(when top-p                 `((top_p . ,top-p)))
+                               ,@(when frequency-penalty     `((frequency_penalty . ,frequency-penalty)))
+                               ,@(when presence-penalty      `((presence_penalty . ,presence-penalty)))))))
+
+      (when extra-system-prompt
+        (setq data (append data `((system . ,extra-system-prompt)))))
+      (cui--debug "cui-restapi--payload data N2: %s" (pp-to-string data))
+      data)))
+
+(defun cui-restapi--clean-unicode-text (str)
+  "Remove ASCII control chars except tab, newline, and carriage return.
+Argument STR unicode multi-byte string."
+  (apply #'string
+         (seq-filter
+          (lambda (ch)
+            (or (>= ch 32) ; ; Unicode (including emoji, CJK, etc.) and printable ASCII
+                (memq ch '(?\t ?\n)) ; allow  tab, linefeed, forbid: ?\r CR
+                ))
+          (string-to-list
+           (replace-regexp-in-string "\r.*?\r" "" str))))) ; removes content between pairs of CRs, which may be too aggressive.
+
+(defun cui-restapi--json-safe-decoding (string)
+  "Decode JSON STRING to plist.
+This is slow version compared to `json-read', because
+`json-read-from-string' create temp buffer.
+Used for stream and not stream.
+Return nil if error."
+  (cui--debug "cui-restapi--json-safe-decoding")
+  (condition-case _err
+      (let ((json-object-type 'plist)
+            (json-key-type 'symbol)
+            (json-array-type 'vector)
+            (clean-text (cui-restapi--clean-unicode-text
+                         (decode-coding-string
+                          (encode-coding-string string 'utf-8 t) 'utf-8))))
+
+        (json-read-from-string clean-text))
+    (error nil)))
+
+
+(defun cui-restapi--url-request-on-change-function (_beg _end _len)
+  "First function that read url-request buffer and extracts JSON stream responses.
+Arguments _BEG _END _LEN are not used.  They are:
+the positions of the beginning and end of the range of changed text,
+and the length in chars of the pre-change text replaced by that range.
+Call `cui-restapi--current-url-request-callback' with data.
+After processing call `cui-restapi--current-url-request-callback' with nil.
+This  callback  here  is `cui-block--insert-stream-response'  for  chat  or
+`cui-block--insert-single-response' for completion.
+Called within `url-retrieve' buffer, from `after-change-functions'
+ variable and from callback of `url-request-buffer'.
+Return JSOIN in plist format."
+  (when (and (boundp 'url-http-end-of-headers)
+             url-http-end-of-headers
+             (if cui-restapi--url-buffer-last-position-marker
+                 (> (- (point-max) (marker-position cui-restapi--url-buffer-last-position-marker)) 6) ; [DONE]
+               t))
+    (save-excursion
+      (save-match-data ; without it cause error integer-or-marker-p nil in 'url-http-chunked-encoding-after-change-function`
+        (if cui-restapi--url-buffer-last-position-marker
+            (goto-char cui-restapi--url-buffer-last-position-marker)
+          ;; else
+          (goto-char url-http-end-of-headers)
+          (setq cui-restapi--url-buffer-last-position-marker (point-marker)))
+        (cui--debug "cui-restapi--url-request-on-change-function 1) %s" (- (point-max) (point)))
+        (cui--debug "cui-restapi--url-request-on-change-function 2) streaming? %s" cui-restapi--current-request-is-streamed)
+        ;; - Streamed
+        ;; multiple JSON objects prefixed with "data: " separated by empty line
+        ;; This is a fast version of JSON decoding. We falback to slow version if error.
+        (when cui-restapi--current-request-is-streamed
+          (let ((errored nil)
+                (case-fold-search nil)
+                psave
+                line1) ; simple line
+            (set-buffer-multibyte t) ; force UTF-8 for url-buffer
+            (cui--debug "cui-restapi--url-request-on-change-function 3) %s %s %s" errored (point) (point-max))
+            ;; loop per chunks separated by empty line
+            (while (and (not errored) ; we decode chunks until unable to decode one, this mean that chunk should be received first.
+                        (search-forward "data: " nil t)) ; set cursor after "data: {" on "{"
+
+              (setq psave (point))
+
+              (cui--debug "cui-restapi--url-request-on-change-function 4) found: %s %s" (point) cui-restapi--url-buffer-last-position-marker)
+              (when (setq line1 (buffer-substring-no-properties (point) (line-end-position)))
+                (if (string= line1 "[DONE]") ;; "[DONE]" string found
+                    (progn
+                      (cui--debug "cui-restapi--url-request-on-change-function 10) DONE %s %s" (point) (point-max))
+                      (end-of-line)
+                      (set-marker cui-restapi--url-buffer-last-position-marker (point))
+
+                      (remove-hook 'after-change-functions #'cui-restapi--url-request-on-change-function t)
+
+                      (funcall cui-restapi--current-url-request-callback nil) ; INSERT CALLBACK! - no do nothing
+                      (cui--debug "cui-restapi--url-request-on-change-function 11) DONE"))
+                  ;; - else not DONE
+                  (let ((json-object-type 'plist)
+                        (json-key-type 'symbol)
+                        (json-array-type 'vector)
+                        ;; (tmp-buf (or cui-restapi--tmp-buf
+                        ;;              (setq cui-restapi--tmp-buf (generate-new-buffer " *temp*" t))))
+                        data
+                        line) ; multi-line if splitted
+                    ;; - Decoding attempt 1.
+                    (condition-case _err
+                        (progn
+                          ;; (erase-buffer)
+                          ;; (insert line1)
+                          ;; (goto-char (point-min))
+                          (setq data (json-read)))
+                      (error
+                       (setq errored t)
+                       nil))
+                    ;; - Decoding attempt 2.
+                    (when errored
+                      (cui--debug "cui-restapi--url-request-on-change-function 6) - Decoding attempt 2")
+                      (goto-char psave)
+                      (setq line
+                            ;; if string splitted in url-buffer for some reason. we look for empty lines as a separateror.
+                            (string-join
+                             (nreverse
+                              (let ((lines (list (buffer-substring-no-properties (point) (line-end-position))))
+                                    line-cur)
+                                (while (and (= (forward-line) 0) ; if not end of buffer
+                                            (progn
+                                              (setq line-cur (buffer-substring-no-properties (point) (line-end-position)))
+                                              (unless (string-empty-p line-cur)
+                                                (push line-cur lines)))))
+                                lines)))) ; stop at empty next line.
+                      (cui--debug "cui-restapi--url-request-on-change-function 7) - Decoding attempt 2: %s" line)
+                      (setq data (cui-restapi--json-safe-decoding line))
+                      (if data
+                          (setq errored nil)))
+                    (cui--debug "cui-restapi--url-request-on-change-function 8) data? %s" data)
+
+                    (when data ;; errored is nil
+                      ;; save only if data or DONE
+                      (set-marker cui-restapi--url-buffer-last-position-marker (point))
+                      (cui--debug "cui-restapi--url-request-on-change-function 9) - request-callback")
+                      (funcall cui-restapi--current-url-request-callback data) ; INSERT CALLBACK!
+                      )))))))
+
+        ;; - Not-streamed - handled in url-retrieve event
+        ))))
+
+
+;; -=-= Reporter & Requests interrupt functions
+;; 1) `cui-timers--progress-reporter-run' - start global timer
+;; 2) `cui-timers--interrupt-current-request' - interrupt, called to stop tracking on-changes or kill buffer
+;; When  we kill  one buffer  and if  no others  we report  failure or
+;; success  if there  are  other  we just  continue  and don't  change
+;; reporter.
+;; Functions:
+;; Failure by time:
+;; `cui-restapi-stop-all-url-requests' 'failed
+;; `cui-timers--interrupt-current-request'
+;; Success:
+;; `cui-timers--interrupt-current-request'
+;; Interactive:
+;; `cui-restapi-interrupt-url-request'
+;; Variables:
+;; - `cui-timers--global-progress-reporter' - lambda that return a string,
+;; - `cui-timers--global-progress-timer' - timer that output /-\ to echo area.
+;; - `cui-timers--global-progress-timer-remaining-ticks'.
+;; - `cui-timers--current-progress-timer' - count life of url buffer,
+;; - `cui-timers--current-progress-timer-remaining-ticks'."
+
+(defun cui-restapi--interrupt-url-request (url-buffer)
+  "Remove on-update hook and kill URL-BUFFER.
+Called from `cui-restapi-stop-url-request',
+`cui-restapi-stop-all-url-requests'."
+  ;; (cui--debug "cui-restapi--interrupt-url-request"
+  ;;                (eq (current-buffer) url-buffer)
+  ;;                (buffer-live-p url-buffer))
+  (cui--debug "cui-restapi--stop-tracking-url-request %s" url-buffer)
+  (if (eq (current-buffer) url-buffer)
+      (progn
+        (remove-hook 'after-change-functions #'cui-restapi--url-request-on-change-function t)
+        (when (buffer-live-p url-buffer)
+          (let (kill-buffer-query-functions)
+            (kill-buffer url-buffer))))
+    ;; else
+    (when (and url-buffer (buffer-live-p url-buffer))
+      (with-current-buffer url-buffer
+        (remove-hook 'after-change-functions #'cui-restapi--url-request-on-change-function t)
+        (let (kill-buffer-query-functions) ; set to nil
+          (kill-buffer url-buffer))))))
+
+(defun cui-restapi--stop-tracking-url-request (url-buffer)
+  "Remove on-update hook and not kill URL-BUFFER.
+Called from `cui-restapi-stop-url-request',
+`cui-restapi-stop-all-url-requests'."
+  (cui--debug "cui-restapi--stop-tracking-url-request %s %s"
+                 (eq (current-buffer) url-buffer)
+                 (buffer-live-p url-buffer))
+  (if (eq (current-buffer) url-buffer)
+      (remove-hook 'after-change-functions #'cui-restapi--url-request-on-change-function t)
+    ;; else
+    (if (and url-buffer (buffer-live-p url-buffer))
+      (with-current-buffer url-buffer
+        (remove-hook 'after-change-functions #'cui-restapi--url-request-on-change-function t)))))
+
+(cl-defun cui-restapi-stop-url-request (&optional &key element url-buffer)
+  "Interrupt the request for ELEMENT or URL-BUFFER.
+If  no ELEMENT  or URL-BUFFER  provided we  use in  current ai  block at
+current position at current buffer.
+Return t if buffer was found.
+Called from `cui-timers--progress-reporter-run'."
+  (interactive)
+  ;; (cui--debug "cui-restapi-stop-url-request, current buffer %s, url-buf %s, element %s"
+  ;;                (current-buffer) url-buffer
+  ;;                (cui-block-p))
+  (if-let* ((element (or element (cui-block-p)))
+            (url-buffers (if url-buffer
+                             (list url-buffer)
+                           ;; else
+                           (cui-timers--get-keys-for-variable (cui-block-get-header-marker element)))))
+      (progn
+        (cui--debug "cui-restapi-stop-url-request, element %s, url-buffers %s"
+                       element
+                       url-buffers)
+        (cui-timers--interrupt-current-request url-buffers #'cui-restapi--interrupt-url-request)
+        t)
+    ;; else - called not at from some block, but from elsewhere
+    ;; (cui--debug "cui-restapi-stop-url-request all %s" (cui-timers--get-keys-for-variable (cui-block-get-header-marker element)))
+    (cui-restapi-stop-all-url-requests))) ; kill all
+
+;;;###autoload
+(cl-defun cui-restapi-stop-all-url-requests (&optional &key failed)
+  "Called from `cui-restapi-stop-url-request' when not at some block.
+Return t if buffer was found, nil otherwise.
+Optional FAILED flag used to signal of failure to user, that timer is
+over."
+  (interactive)
+  (cui-timers--interrupt-all-requests #'cui-restapi--interrupt-url-request failed))
+
+
+
+
+
+
+;; -=-= Others
+(provide 'cui-restapi)
+;;; cui-restapi.el ends here

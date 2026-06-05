@@ -1,0 +1,1057 @@
+;; -*- lexical-binding: t -*-
+;; - for org-element-at-point to work and cui-where-is-src-block-result
+;; - breaks 'fill-paragraph
+(when (boundp 'org-element-greater-elements)
+  (setq org-element-greater-elements (remove 'special-block org-element-greater-elements)))
+
+;; (defun cui-block--org-fill-element-advice (func-call &rest args)
+(defun cui-block-fill-paragraph (&optional justify region)
+  (interactive (progn
+		 (barf-if-buffer-read-only)
+		 (list (when current-prefix-arg 'full) t)))
+  (cui-block--org-fill-element-advice justify)
+  )
+(setq-local fill-paragraph-function 'cui-block-fill-paragraph)
+
+(defun cui-block--org-fill-element-advice (func-call &rest args)
+  (let ((justify (car args)))
+  (with-syntax-table org-mode-transpose-word-syntax-table
+    (let ((element (save-excursion (end-of-line) (org-element-at-point))))
+      ;; (if (org-element-type element)
+      (if (string-equal "ai" (org-element-property :type element))
+          ;; - fixed part of part of `org-fill-element' for paragraph
+          ;; Paragraphs may contain `line-break' type objects.
+	  (let ((beg (max (point-min) (org-element-contents-begin element)))
+                (end (min (point-max) (org-element-contents-end element))))
+            ;; Do nothing if point is at an affiliated keyword.
+            (unless (< (line-end-position) beg)
+              (save-excursion
+                (goto-char beg)
+                (let ((regions (list (make-marker))))
+                  ;; Set marker for the start of the first region.
+                  (set-marker (car regions) beg)
+                  ;; Collect region boundaries by finding empty lines, using markers.
+                  (while (< (point) end)
+                    (if (looking-at-p "^[ \t]*$")
+                        (progn
+                          (push (make-marker) regions)
+                          (set-marker (car regions) (point))
+                          (forward-line 1))
+                      (forward-line 1)))
+                  ;; Set marker for the end of the last region.
+                  (push (make-marker) regions)
+                  (set-marker (car regions) end)
+                  (setq regions (nreverse regions))
+                  ;; Apply fill-paragraph to each region.
+                  (while (cdr regions)
+                    (let ((region-beg (marker-position (car regions)))
+                          (region-end (marker-position (cadr regions))))
+                      (when (> region-end region-beg)
+                        (fill-region-as-paragraph region-beg region-end justify))
+                      (pop regions)))
+                  ;; Clean up markers to avoid memory leaks.
+                  (dolist (m regions)
+                    (set-marker m nil))))
+              t))
+)
+      )
+  )))
+
+(advice-add 'org-fill-element :after #'cui-block--org-fill-element-advice)
+
+(defun cui-block--org-element-context-advice (func-call &rest args)
+  "For `org-babel-where-is-src-block-result'.
+Allow to simplify code by using many org-babel functions."
+  (if (not (assq 'cui-mode minor-mode-alist))
+      (apply func-call args)
+    ;; else
+    (let ((element (apply func-call args))) ;          (type (org-element-property :type element)))
+      (if (string-equal "ai" (org-element-property :type element))
+          (cons 'src-block (cdr element)) ; fake "ai" special-block as src-block
+        ;; else
+        element))))
+;; - required for org-babel-where-is-src-block-result
+(advice-add 'org-element-context :around #'cui-block--org-element-context-advice)
+;; - required?????
+;; (advice-add 'org-element-at-point :around #'cui-block--org-element-context-advice)
+
+
+(defun cui-openai--get-greatest-variable (alist)
+    (if (null alist)
+        nil
+      (car (sort alist (lambda (x y) (> (cdr x) (cdr y)))))))
+
+;; (equal (cui-openai--get-greatest-variable '((bb . 3) (aa . 2))) '(bb . 3))
+;; (equal (cui-openai--get-greatest-variable '((aa . 2) (bb . 3))) '(bb . 3))
+;; (equal (cui-openai--get-greatest-variable '((cc . 1)))          '(cc . 1))
+;; (equal (cui-openai--get-greatest-variable '())                  nil)
+
+(defun apply-to-old-keys (seconds timed-alist func)
+  "Remove keys from `timed-alist' whose timestamps are older than SECONDS seconds."
+  (let ((current (time-to-seconds (current-time))))
+    (mapc func (seq-filter
+                (lambda (entry)
+                  (<= (- current (time-to-seconds (cdr entry))) seconds))
+                timed-alist)))
+
+(defun cui--progress-reporter-update ()
+  "2) interrupt
+3) Remove keys"
+  (apply-to-old-keys cui-progress-duration
+                     cui-block--element-marker-variable-dict
+                     (lambda ()
+                       )))
+
+
+(defun cui--progress-reporter-global-cancel (block-marker &optional failed)
+  "Stop progress notification for element.
+BLOCK-MARKER is marker for ai block header from
+`cui-block-get-header-marker'."
+  (cui-block--set-variable :value nil :block-header-marker block-marker)
+
+  (when-let ((apply-to-old-keys cui-progress-duration
+                                cui-block--element-marker-variable-dict
+
+               (time-longest  (cui-openai--get-greatest-variable cui-block--element-marker-variable-dict))
+  cui-block--element-marker-variable-dict
+
+  (when cui--current-progress-reporter
+
+    (if failed ; timeout
+        (progn ; from `url-queue-kill-job'
+          ;; (progress-reporter-done cui--current-progress-reporter)
+          (progress-reporter-update cui--current-progress-reporter nil "- Connection failed")
+          (message (concat cui--progress-reporter-waiting-string "- Connection failed"))
+          (setq cui--current-progress-reporter nil)
+          (cui-interrupt-current-request)
+          ;; (when (buffer-live-p cui--last-url-buffer)
+          ;;   (cui--kill-query-process))
+          )
+      ;; else success
+      (progress-reporter-done cui--current-progress-reporter)
+      (setq cui--current-progress-reporter nil)))
+  ;; clear time
+  (when cui--current-progress-timer
+    (cancel-timer cui--current-progress-timer)
+    (setq cui--current-progress-timer-remaining-ticks 0)))
+
+
+(cl-defun cui-restapi-request-sync (service model timeout &optional &key prompt messages max-tokens temperature top-p frequency-penalty presence-penalty)
+  "Return nil or result of `cui-restapi--normalize-response'.
+To a"
+  (let ((url-request-extra-headers (cui--get-headers service))
+        (url-request-method "POST")
+        (endpoint (cui-restapi--get-endpoint messages service))
+        (url-request-data (cui-restapi--payload :prompt prompt
+					   :messages messages
+					   :model model
+					   :max-tokens max-tokens
+					   :temperature temperature
+					   :top-p top-p
+					   :frequency-penalty frequency-penalty
+					   :presence-penalty presence-penalty
+					   :service service
+					   :stream nil)))
+    (cui--debug "cui-restapi-request-sync endpoint:" endpoint (type-of endpoint)
+                   "request-data:" (cui-restapi--prettify-json-string url-request-data)
+                   )
+    (let ((url-request-buffer
+           (url-retrieve-synchronously ; <- - - - - - - - -  MAIN
+            endpoint
+            t
+            t
+            timeout)))
+      (if url-request-buffer
+          (with-current-buffer url-request-buffer
+            (cui--debug-urllib url-request-buffer)
+            (cui-restapi--url-maybe-show-request-error) ; TODO: change to RESULT by global customizable option
+
+            ;; - read from url-buffer
+            (when (and (boundp 'url-http-end-of-headers) url-http-end-of-headers)
+              (goto-char url-http-end-of-headers)
+              (let ((json-object-type 'plist)
+                    (json-key-type 'symbol)
+                    (json-array-type 'vector))
+                (condition-case _err
+                    ;; ;; (#s(cui-restapi--response role "assistant") #s(cui-restapi--response text "It seems ") #s(cui-restapi--response stop "length"))
+                    ;; (let* ((res1 (buffer-substring-no-properties (point) (point-max)))
+                    ;;        (res2 (json-read-from-string res1))
+                    ;;        (res3 (cui-restapi--normalize-response res2))
+                    ;;        (res4 (nth 1 res3))
+                    ;;        (res5 (cui-restapi--response-payload res4))
+                    ;;        (res (decode-coding-string res5 'utf-8)))
+                    ;;   res
+                    ;;   )
+                    (decode-coding-string (cui-restapi--response-payload (nth 1
+                                                                         (cui-restapi--normalize-response
+                                                                          (json-read-from-string
+                                                                           (buffer-substring-no-properties (point) (point-max))))))
+                                          'utf-8)
+                  (error nil)))))
+        ;; else
+        (print "cui-restapi-request-sync: timeout for request")
+        (cui--debug "cui-restapi-request-sync: timeout for request:" service model messages)))))
+
+(let ((service 'together)
+      (model "meta-llama/Llama-3.3-70B-Instruct-Turbo-Free")
+      (max-tokens 99)
+      (temperature nil)
+      (top-p nil)
+      (frequency-penalty nil)
+      (presence-penalty nil))
+  (cui-restapi-request-sync service model
+                           99
+                           :messages  (vector (list :role 'system :content "Be good.")
+                                              (list :role 'user :content "How to do staff?"))
+                           :max-tokens max-tokens
+                           :temperature temperature
+                           :top-p top-p
+                           :frequency-penalty frequency-penalty
+                           :presence-penalty presence-penalty))
+
+(defun my/sync-request (messages service model timeout max-tokens top-p temperature frequency-penalty presence-penalty)
+  "Do synchronous request.
+Return string of LLM answer as assistent."
+  (let ((lst '(0 1 2 3)) ; retries
+        ret)
+    (while (and (setq lst (cdr lst)) ; make list shorter
+                (not ret)) ; ret is not nil?
+      ;; second request
+      (setq ret (cui-restapi-request-sync service model timeout
+                                          :messages messages
+                                          :max-tokens max-tokens
+                                          :temperature temperature
+                                          :top-p top-p
+                                          :frequency-penalty frequency-penalty
+                                          :presence-penalty presence-penalty))
+      (setq timeout (* timeout 2)))
+    ret))
+
+(my/sync-request '([(:role system :content "Be helpful. Now, plan research of 3 parts and do only first part to answer this user request:") (:role user :content "How to live?") (:role system :content "Research 2-th part and what was missed before.")] together "meta-llama/Llama-3.3-70B-Instruct-Turbo-Free" 1.0e+INF "How to live?" 20 nil nil nil nil))
+
+
+(defun cui-debug--error-async (err &optional bt-string  timeout)
+  "Create Backtrace buffer without buttons async after TIMEOUT.
+ERR is error object catched with `condition-case'.
+Optional arguments:
+TIMEOUT by default is nil, which mean 0
+BT-STRING is a string, by default result
+ of (with-output-to-string (backtrace))."
+  (run-at-time timeout nil
+               (lambda (b)
+                 (with-current-buffer (generate-new-buffer "*Backtrace-async*")
+                   (goto-char (point-max))
+                   (insert (format "\nError: %s\nBacktrace:\n%s\n" err b))
+                   (read-only-mode 1)
+                   (special-mode) ; Gives buffer features like Backtrace
+                   (pop-to-buffer (current-buffer)))
+                 ;; rethrow preserving error type/args
+                 (signal (car err) (cdr err)))
+               (or bt-string
+                   (let* ((backtrace-line-length 20) ; used by `backtrace-get-frames'
+                          (print-level 3)
+                          (print-length 10)
+                          (bt
+                           ;; (with-output-to-string (backtrace))
+                           (backtrace-to-string (backtrace-get-frames 'backtrace))))
+                     bt)
+                   ;; (with-output-to-string (backtrace))
+                   )))
+
+
+;; not used
+(cl-defun cui-optional-remove-distant-empty-lines-old (start end)
+  "Remove empty lines in current buffer between START and END.
+Removes an empty line only if another empty line is two lines above
+it.
+Empty line is blank or whitespace-only.
+Does not remove an empty line if the line immediately following it
+contains [ME]:"
+  (interactive "r")
+
+  (let ((lines-to-delete-pos '())
+        (original-start start)
+        (original-end end))
+
+    (save-excursion
+      ;; Phase 1: Collect info about lines in the region.
+      ;; Each element: (line-start-position is-blank-p line-text)
+      (let ((line-data-list '()))
+        (goto-char start)
+        (while (and (< (point) end) (not (eobp))) ; Iterate as long as point is within region and not end of buffer
+          (let* ((line-start-pos (line-beginning-position))
+                 (line-end-pos (line-end-position))
+                 (line-text (buffer-substring-no-properties line-start-pos line-end-pos))
+                 (is-blank (string-blank-p line-text)))
+            ;; Store as a simple list: (position is-blank-p line-text)
+            (push (list line-start-pos is-blank line-text) line-data-list))
+          (forward-line 1))
+        (setq line-data-list (nreverse line-data-list)) ; Reverse to get in document order
+
+        ;; Phase 2: Identify lines for deletion.
+        ;; Iterate through the list with indices to check previous and next lines efficiently.
+        (dotimes (i (length line-data-list))
+          ;; Use cl-destructuring-bind for clear access to current line's data
+          (seq-let (current-line-pos current-is-blank current-text) (nth i line-data-list)
+            (ignore current-text)
+          ;; (cl-destructuring-bind (current-line-pos current-is-blank current-text)
+          ;;     (nth i line-data-list)
+            (let* (
+                   ;; Safely get blank status for previous two lines
+                   (prev-line-is-blank
+                    (and (> i 0)
+                         (let ((prev-data (nth (1- i) line-data-list)))
+                           ;; (nth 1 prev-data) gets the 'is-blank-p' value (second element of the list)
+                           (if prev-data (nth 1 prev-data) nil))))
+
+                   (prev-prev-line-is-blank
+                    (and (> i 1)
+                         (let ((prev-prev-data (nth (- i 2) line-data-list)))
+                           ;; (nth 1 prev-prev-data) gets the 'is-blank-p' value
+                           (if prev-prev-data (nth 1 prev-prev-data) nil))))
+
+                   ;; Safely get text for the next line
+                   (next-line-text
+                    (and (< (1+ i) (length line-data-list))
+                         (let ((next-data (nth (1+ i) line-data-list)))
+                           ;; (nth 2 next-data) gets the 'line-text' value (third element of the list)
+                           (if next-data (nth 2 next-data) nil))))
+
+                   (next-line-contains-me-p (and next-line-text (string-match-p "\\[ME\\]:" next-line-text))))
+
+              ;; Condition for deletion:
+              ;; 1. Current line is blank.
+              ;; 2. Line two steps back was blank.
+              ;; 3. The next line does NOT contain "[ME]:".
+              (when (and current-is-blank
+                         (or prev-prev-line-is-blank prev-line-is-blank)
+                         (not next-line-contains-me-p))
+                (push current-line-pos lines-to-delete-pos))))))
+
+    ;; Phase 3: Delete the identified lines.
+    ;; Delete from largest position to smallest to avoid invalidating positions.
+    (save-excursion
+      (dolist (pos lines-to-delete-pos)
+        ;; Ensure the position is still within the original bounds.
+        (when (and (>= pos original-start) (< pos original-end))
+          (goto-char pos)
+          ;; Delete the current line, including its trailing newline.
+          (delete-region (point) (progn (forward-line 1) (point))))))
+
+    ;; (message "Removed empty lines based on condition.")
+    )))
+
+(defun cui-optional-remove-distant-empty-lines-hook-function (type content before-pos stream)
+  "Remove empty lines when there is too many of them.
+TYPE _CONTENT BEFORE-POS BUF parameters described in
+`cui-block-after-chat-insertion-hook' hook.
+Argument STREAM not used."
+  (ignore content stream)
+  (save-excursion
+    (cui--debug "IN A HOOK cui-optional-remove-distant-empty-lines-hook-function: %s %s %s %s"
+                before-pos
+                (point)
+                type
+                (type-of type))
+    (when (equal type 'end)
+      (let* ((area (cui-block--contents-region))
+             (con-beg (car area))
+             (con-end (cdr area)))
+        (cui-optional-remove-distant-empty-lines con-beg con-end)))))
+
+;; (defcustom cui-optional-fill-paragraph-functions
+;;   (list
+;;    'org-fill-paragraph)
+;;    "List of steps to perform in the `my/org-fill-paragraph' function.
+;; Replace single `fill-paragraph-function' variable with list of
+;; functions."
+;;   :type '(repeat function)
+;;   :group 'cui)
+
+;; -=-= old: fill-paragraph (old, not used)
+;; (defun cui-optional-fill-paragraph (&optional justify region)
+;;   "Call functions until success.
+;; Replace single `fill-paragraph-function' with list of functions.
+;; Optional argument JUSTIFY is parameter of `fill-paragraph'.
+;; Optional argument REGION ."
+;;   (interactive (progn
+;; 		 (barf-if-buffer-read-only)
+;; 		 (list (when current-prefix-arg 'full) t)))
+;;   ;; call in loop functions, untill one return true
+;;   (seq-find (lambda(step)
+;;                 ;; (message step) ; debug
+;;                 (funcall step justify region))
+;;             my/org-fill-paragraph-functions))
+
+;; Usage:
+;; (setq cui-optional-fill-paragraph-functions
+;;           (append (list #'my/cui-fill-paragraph)
+;;                   cui-optional-fill-paragraph-functions))
+
+;; (keymap-set org-mode-map \"M-q\" #'cui-optional-fill-paragraph)
+
+
+;; -=-= old: remove-distant-empty-lines (old version)
+;; (cl-defun cui-optional-remove-distant-empty-lines (start end)
+;;   "Remove empty lines in current buffer between START and END.
+;; Removes an empty line only if another empty line is two lines above it.
+;; An 'empty line' is blank or whitespace-only.
+
+;; Example:
+;;   Original:      Result:
+;;   line 1         line 1
+;;                  (empty A) (kept)  (empty A)
+;;   line 2         line 2
+;;                  (empty B) (removed)line 3
+;;   line 3         line 4
+;;                  (empty C) (removed)line 5
+;;   line 4         (empty D)
+;;   line 5         line 6
+;;                  (empty D) (kept)
+;;   line 6
+
+;; Case ME:
+;; line 1         line 1
+;;                  (empty A) (kept)  (empty A)
+;; line 2         line 2
+;;                  (empty B) (not removed)
+;; line 3 with [ME]:   line 4
+;; "
+;;   (interactive "r") ;; Usable interactively on a selected region.
+
+;;   (let ((lines-to-delete-pos '()) ; Stores positions of lines to remove.
+;;         (line-info-list '())      ; Stores (line-pos . is-blank-p) for all lines in region.
+;;         (original-start start)    ; Store original region start for robustness.
+;;         (original-end end))       ; Store original region end for robustness.
+
+;;     (save-excursion ;; Preserve point and mark positions after execution.
+
+;;       ;; Phase 1: Collect info about lines in the region.
+;;       ;; Iterate through the region, recording each line's starting position
+;;       ;; and whether it's blank (contains only whitespace).
+;;       (goto-char start)
+;;       (while (< (point) end)
+;;         (push (cons (point) (string-blank-p (buffer-substring-no-properties (line-beginning-position) (line-end-position))))
+;;               line-info-list)
+;;         (forward-line 1))
+;;       ;; Reverse the list to get lines in document order (top to bottom).
+;;       (setq line-info-list (nreverse line-info-list))
+
+;;       ;; Phase 2: Identify lines for deletion.
+;;       ;; Iterate through the collected line information, keeping track of the
+;;       ;; blank status of the previous two lines to apply the condition.
+;;       (let ((line-minus-1-info nil) ; Stores (pos . is-blank) for the line one step back.
+;;             (line-minus-2-info nil)) ; Stores (pos . is-blank) for the line two steps back.
+;;         (dolist (current-line-info line-info-list)
+;;           (let* ((current-line-pos (car current-line-info))
+;;                  (current-line-is-blank (cdr current-line-info)))
+
+;;             ;; Condition for deletion: current line is blank AND the line two steps back existed
+;;             ;; and was also blank.
+;;             (when (and current-line-is-blank
+;;                        line-minus-2-info             ; Check if line two steps back actually exists.
+;;                        (cdr line-minus-2-info))      ; Check if that line was blank.
+;;               ;; If condition met, mark current line for deletion.
+;;               ;; `push` adds positions to the front, so the list will be in reverse order
+;;               ;; of appearance (later lines appear first in the list), which is ideal for deletion.
+;;               (push current-line-pos lines-to-delete-pos)))
+
+;;           ;; Update history for the next iteration:
+;;           ;; Old 'minus-1' becomes new 'minus-2'.
+;;           ;; Current line becomes new 'minus-1'.
+;;           (setq line-minus-2-info line-minus-1-info)
+;;           (setq line-minus-1-info current-line-info))))
+
+;;     ;; Phase 3: Delete the identified lines.
+;;     ;; Iterate through `lines-to-delete-pos`. Since it's already ordered from
+;;     ;; the largest position to the smallest, deletions occur safely from the
+;;     ;; end of the region towards the beginning, preventing position invalidation.
+;;     (save-excursion
+;;       (dolist (pos lines-to-delete-pos)
+;;         ;; Robustness check: Ensure the position is still within the original bounds.
+;;         (when (and (>= pos original-start) (< pos original-end))
+;;           (goto-char pos) ; Move point to the start of the line to be deleted.
+;;           ;; Delete the current line, including its trailing newline.
+;;           (delete-region (point) (progn (forward-line 1) (point))))))
+
+;;     (message "Removed empty lines based on condition.")))
+
+       ;; (defun unicode-string-filter (str)
+;;   "Return a string with only valid Unicode code points from STR."
+;;   (apply 'string
+;;          (seq-filter
+;;           (lambda (ch)
+;;             (and (<= 0 ch #x10FFFF)       ;; unicode range
+;;                  (not (and (>= ch #xD800) (<= ch #xDFFF))) ;; skip surrogates
+;;                  (characterp ch)))        ;; ensure is a char
+;;           (string-to-list str))))
+
+;; (defun text-clean-unicode-string (str)
+;;   "Return STR with only printable, standard Unicode text.
+;; Removes ASCII control chars (except tab/newline/CR), surrogates, private use, noncharacters,
+;; and other non-text code points. Suitable for JSON parsing."
+;;   (apply 'string
+;;          (seq-filter
+;;           (lambda (ch)
+;;             (and
+;;              (characterp ch)
+;;              (<= 0 ch #x10FFFF)
+;;              (let* ((cat (get-char-code-property ch 'general-category))
+;;                     (cat-str (if (symbolp cat) (symbol-name cat) cat)))
+;;                (or
+;;                  ;; Allow typical printable categories
+;;                  (member (substring cat-str 0 1) '("L" "M" "N" "P" "S"))
+;;                  ;; Allow space and separators
+;;                  (member cat-str '("Zs" "Zl" "Zp"))
+;;                  ;; Allow tab, newline, carriage return explicitly
+;;                  (member ch '(?\t ?\n ?\r))))
+;;              ;; Exclude surrogate range
+;;              (not (and (>= ch #xD800) (<= ch #xDFFF)))
+;;              ;; Remove Unicode noncharacters
+;;              (not (or
+;;                    (and (>= ch #xFDD0) (<= ch #xFDEF))
+;;                    (= (mod ch #x10000) #xFFFE)
+;;                    (= (mod ch #x10000) #xFFFF)))))
+;;           (string-to-list str))))
+
+;; (defun ultra-aggressive-ascii-filter (str)
+;;   "Return STR containing only safe printable ASCII characters and essential whitespace.
+;; Filters out all control/non-ASCII/format/non-printable/surrogate/private-use/noncharacters."
+;;   (apply 'string
+;;          (seq-filter
+;;           (lambda (ch)
+;;             (cond
+;;              ;; Printable ASCII (codes 32-126: ' ', '!'..'~')
+;;              ((and (>= ch 32) (<= ch 126)) t)
+;;              ;; Essential whitespace: tab, newline, carriage return
+;;              ((member ch '(?\t ?\n ?\r)) t)
+;;              ;; Everything else excluded!
+;;              (t nil)))
+;;           (string-to-list str))))
+;; (defun aggressive-unicode-filter (str)
+;;   "Return STR with only Unicode letters, numbers, plus essential whitespace.
+;; Removes all control, format, separator, symbol, private, and noncharacter code points."
+;;   (apply 'string
+;;          (seq-filter
+;;           (lambda (ch)
+;;             (let* ((cat (get-char-code-property ch 'general-category))
+;;                    (cat-str (if (symbolp cat) (symbol-name cat) cat))
+;;                    (cat1 (substring cat-str 0 1)))
+;;               (or
+;;                (member cat1 '("L" "N")) ; letters and numbers
+;;                (member ch '(?\t ?\n ?\r ?\x20))))) ; whitespace
+;;           (string-to-list str))))
+
+;; (defun cui-block-kill-message-at-point (&optional arg)
+;;   "Kill the prompt at point.
+;; The numeric ARG can be used for killing the last n."
+;;   (interactive "P")
+;;   (if arg
+;;       (when-let* ((region (cui-block--region))
+;;                   (start (car region))
+;;                   (end (cdr region)))
+;;         (kill-region end start))
+;;     (when-let* ((region (cui-block-mark-chat-message-at-point))
+;;                 (start (car region))
+;;                 (end (cdr region)))
+;;       (kill-region end start))))
+
+
+  ;; (if (and (not arg)
+  ;;          (region-active-p))
+
+  ;;     ;; else
+  ;;     (if arg
+  ;;         (progn (deactivate-mark)
+  ;;                (cui-block-mark-chat-message-at-point)
+  ;;                (message "Chat message"))
+        ;; else
+
+;; (defun cui-block-next-element (&optional arg)
+;;   "Select next element of ai block or just jump.
+;; If optional argument ARG is non-nil, use default behavior to just jump.
+;; Used with conjunction of `cui-block-mark-at-point' function.
+;; If region is active and no ARG we select next element by selecting it as
+;; current."
+;;   (interactive "P")
+;;   (steps (list 'org-forward-element ;0
+;;                '
+;;                (if (region-active-p)
+;;       (let (
+;;                          )
+;;             (mark-num (save-mark-and-excursion
+;;                         (cui-block-mark-at-point)))) ;
+;;         ;; (deactivate-mark)
+;;         (print mark-num)
+;;          ))
+;;         ;; (cond
+;;         ;;  (eq mark-num
+;;         ;; cui-block-next-message
+;;     ;; else
+;;     (cond
+;;      ((org-in-regexp cui-block--chat-prefixes-re)
+;;       (re-search-forward cui-block--chat-prefixes-re nil t)) ; todo limit current block
+;;     ))
+
+;; -=-= interactive: next-ai-block
+(defvar cui-block-ai-block-regexp
+  (concat
+   "^#\\+begin_ai[^\n]*\n"
+   ;; (1) body
+   "\\(\\(?:.\\|\n\\)*?\\)??[ \t\n]*#\\+end_ai")
+  "Regexp used to ai blocks or its body.
+Modified `org-babel-src-block-regexp' for `cui-block-next-ai-block'.")
+
+(defun cui-block-next-ai-block (&optional arg)
+  "Jump to the next ai block.
+Like `org-babel-next-src-block'.
+With optional prefix argument ARG, jump forward ARG many source blocks."
+  (interactive "p")
+  (org-next-block arg nil cui-block-ai-block-regexp))
+
+(defun cui-block-previous-ai-block (&optional arg)
+  "Jump to the previous ai block.
+With optional prefix argument ARG, jump backward ARG many source blocks."
+  (interactive "p")
+  (org-previous-block arg cui-block-ai-block-regexp))
+
+  ;; replaced by cui-block--pos-in-markdown-block-p
+;; (defun cui-block--markdown-area (pos limit-begin limit-end)
+;;   "Return list with position of markdown multiline blocks.
+;; List is ((begin end) (begining-of-content end-of-content))
+;; If POS position is inside markdown block without specified language or
+;; specified.  Used in `cui-block-mark-at-point'.
+;; If there is two markdown begining with language we treat second as
+;; inside of first.
+;; Argument LIMIT-BEGIN LIMIT-END are positions ai block header and footer."
+;;   (cui--debug "cui-block--markdown-area %s %s %s" pos limit-begin limit-end)
+;;   ;; fix limits
+;;   (when (and limit-begin (< pos limit-begin))
+;;     (setq limit-begin pos))
+;;   (when (and limit-end (> pos limit-end))
+;;     (setq limit-end pos))
+;;   ;; (cui--debug "cui-block--markdown-area0 %s %s %s" pos limit-begin limit-end)
+;;   (let (beg
+;;         end
+;;         beg-cont
+;;         end-cont
+;;         found)
+;;     (goto-char limit-begin)
+;;     ;; 1) find begining with or without language
+;;     ;; (cui--debug "cui-block--markdown-area11 %s %s %s %s" (point) limit-begin limit-end found)
+;;     ;; [[file:~/tmp/emacs-file2026-01-31.org::(while (and context]]
+;;     (while (and (< (point) limit-end)
+;;                 (re-search-forward cui-block--markdown-beg-end-re limit-end t) ; point is at end of line now
+;;                 (not found))
+;;       (unless (string-match-p "```" (match-string 1)) ; should not be flat quoted list
+;;         (setq beg (line-beginning-position)) ; begin of head line
+;;         (forward-line)
+;;         (setq beg-cont (line-beginning-position))
+;;         ;; 2) find end
+;;         (when (and (re-search-forward cui-block--markdown-end-re limit-end t)
+;;                    (not found)) ; pos at next line
+;;           ;; save
+;;           (goto-char (match-beginning 0))
+;;           (setq end (line-end-position))
+;;           (while (bolp)
+;;             (backward-char))
+;;           (setq end-cont (point))
+;;           (goto-char end) ; to skip current block
+
+;;           ;; (cui--debug "cui-block--markdown-area1 %s %s %s" pos beg end)
+;;           (when (and (>= pos beg) (<= pos end))
+;;             (setq found (list (list beg end) (list beg-cont end-cont)))))))
+;;     (cui--debug "cui-block--markdown-area1 %s " found)
+;;     found))
+
+
+;; (defun cui-block--markdown-lang-area (pos limit-beg limit-end)
+;;   "Return (begin end) of markdown language block.
+;; If POS in it.
+;; Optional argument LIM-BEG is ai block begining position.
+;; Return t if pos in markdown block, table or quote.
+;; Side-effect: set pointer position to POS."
+;;   (goto-char pos)
+;;   ;; fix limits
+;;   (when (and limit-begin (< point-pos limit-begin))
+;;     (setq limit-begin point-pos))
+;;   (when (and limit-end (> point-pos limit-end))
+;;     (setq limit-end point-pos))
+;;   (prog1 (let ((beg end))
+;;            ;; not markdown blocks
+;;            ;; backward for markdown block "begin"
+;;            (when (re-search-backward cui-block--markdown-begin-re limit-beg t)
+;;              ;; save
+;;              (forward-line)
+;;              (setq beg (line-end-position))
+;;              ;; restore
+;;              (goto-char pos)
+;;              ;; backward for markdown block "end" after "begin"
+;;              (unless (re-search-backward cui-block--markdown-end-re (match-end 0) t)
+;;                (when (re-search-forward cui-block--markdown-end-re limit-end t)
+;;                  (unless (re-search-backward cui-block--markdown-begin-re pos t)
+;;                    (list beg (match-beginning 0)))))))
+;;     (goto-char pos)))
+
+;; (defun cui-block-tags--in-markdown-quotes-at-line-p (pos)
+;;   "Return t if POS is inside a markdown single backquote.
+;; Region (`...`) on the current line.
+;; Return t at first and last quote too."
+;;   (goto-char pos)
+;;   (prog1 (let ((bol (line-beginning-position))
+;;                (eol (line-end-position))
+;;                (pos (point))
+;;                found)
+;;            (goto-char bol)
+;;            ;; Search for paired backquotes (`...`)
+;;            (while (and (re-search-forward "`" eol t) (not found))
+;;              (let ((start (match-beginning 0)))
+;;                (when (re-search-forward "`" eol t)
+;;                  (let ((end (match-end 0)))
+;;                    (when (and (>= pos start)
+;;                               (< pos end)) ; strictly between the two backquotes
+;;                      (setq found t))))))
+;;            found)
+;;     (goto-char pos)))
+
+;; replaced by `cui-block--collect-chat-messages-at-point'
+;; (defun cui-restapi--collect-chat-messages-at-point (&optional element default-system-prompt persistant-sys-prompts max-token-recommendation separator)
+;;   "Get messsages for ai block at point or element in current buffer.
+;; Replacement Links, remove text properties, split to messages.
+;; ELEMENT is the element of the special block.
+;; Description for DEFAULT-SYSTEM-PROMPT PERSISTANT-SYS-PROMPTS
+;; MAX-TOKEN-RECOMMENDATION SEPARATOR at `cui-block--collect-chat-messages'."
+;;   (cui-block-msgs--collect-chat-messages-from-string
+;;    (cui-block-tags--clear-properties
+;;     (cui-block-tags-replace
+;;      (string-trim
+;;       (cui-block-get-content element))))
+;;    default-system-prompt persistant-sys-prompts max-token-recommendation separator))
+
+
+(defun cui-block-tags--markdown-fenced-code-body-get-range (&optional limit-begin limit-end)
+  "Return (begin end) if point is inside a Markdown fenced language block.
+Blocks without language not supported
+Markdown block with language specified.
+Search for begining and end of block limited by LIMIT-BEGIN and
+LIMIT-END optional parameters.
+Begin in return at first line after header, end is last line.
+Return nil if begin or end of markdown block was not found or block is
+ empty."
+  (save-excursion
+    (beginning-of-line)
+    (let ((point-pos (point))
+          begin end)
+      ;; fix limits
+      (when (and limit-begin (< point-pos limit-begin))
+          (setq limit-begin point-pos))
+      (when (and limit-end (> point-pos limit-end))
+          (setq limit-end point-pos))
+
+      ;; Find nearest header backward
+      (when (or (when (looking-at cui-block--markdown-begin-re nil)
+                  (forward-line)
+                  (setq point-pos (point)))
+                (re-search-backward cui-block--markdown-begin-re (or limit-begin nil) t))
+        (setq begin (match-end 0))
+        ;; Check there is no block footer between begin and point
+        (let ((inter-fence-pos nil))
+          (save-excursion
+            (when (re-search-forward cui-block--markdown-end-re point-pos t)
+              (setq inter-fence-pos t)))
+          (unless inter-fence-pos
+            ;; From header, find next closing fence
+            (goto-char begin)
+            (when (re-search-forward cui-block--markdown-end-re (or limit-end nil) t)
+              (setq end (match-beginning 0))
+              (when (and (>= point-pos begin) (< point-pos end))
+                (list (1+ begin) (1- end))))))))))
+
+                ;; -=-= Tests: cui-block-tags--markdown-fenced-code-body-get-range
+(ert-deftest cui-tests-block-tags--markdown-mark-fenced-code-body-get-range1 ()
+  "Test fenced code detection."
+  (let ((payload "text before
+```elisp
+code block
+line2
+```
+text after"))
+    (with-temp-buffer
+      (insert payload)
+      ;; Move point to inside the code block
+      (goto-char (point-min))
+      (re-search-forward "code block")
+      (beginning-of-line)
+      (forward-line -1)
+      (let* ((limit-begin (point-min))
+             (limit-end (point-max))
+             (range (cui-block-tags--markdown-fenced-code-body-get-range
+                     limit-begin limit-end)))
+        (should (equal range (list 22 38)))))))
+
+(ert-deftest cui-tests-block-tags--markdown-mark-fenced-code-body-get-range2 ()
+  "Test fenced code detection."
+(let ((payload "text before
+```elisp
+```
+code block
+line2
+```
+text after"))
+    (with-temp-buffer
+      (insert payload)
+      ;; Move point to inside the code block
+      (goto-char (point-min))
+      (re-search-forward "code block")
+      (let* ((limit-begin (point-min))
+             (limit-end (point-max))
+             (range (cui-block-tags--markdown-fenced-code-body-get-range
+                     limit-begin limit-end)))
+        (should
+        (equal range nil))))))
+
+(ert-deftest cui-tests-block-tags--markdown-fenced-code-body-get-range3 ()
+  (should (equal '(39 41)
+                 (with-temp-buffer
+                   (org-mode)
+                   (insert "#+NAME: asd\n#+begin_src text\n```elisp")
+                   (let ((p (point)))
+                     (insert "\naa\n```\n#+end_src\n")
+                     (goto-char p)
+                     (cui-block-tags--markdown-fenced-code-body-get-range)))
+                 )))
+
+;; (defmacro cui-restapi--get-value-or-string (var key) ; old
+;;   "Retrieve value from VAR using KEY if VAR is a plist, or return VAR if it's a string.
+;; VAR is the variable name to evaluate.
+;; KEY is a string (without :) or keyword (leading with :) used as a key if
+;; VAR is a plist."
+;;   `(cond ((plistp ,var)
+;;           (plist-get ,var (if (stringp ,key)
+;;                               (intern (concat ":" ,key))
+;;                             ,key)))
+;;           ((stringp ,var)
+;;            ,var)
+;;           (t nil)))
+
+
+;; (defun cui-block-tags--markdown-mark-fenced-code-body (&optional limit-begin limit-end)
+;;   "Mark content inside Markdown fenced code block (```), excluding header/footer.
+;; LIMIT-BEGIN and LIMIT-END restrict the search region around point.
+;; Returns t if was marked, nil otherwise.
+;; Used in `cui-block-tags-mark-md-block-body'."
+;;   ;; fill limit-begin and limit-end - if they was not profiled
+;;   (when (not (and limit-begin limit-end))
+;;     (when-let* ((region (cui-block-tags--contents-area))) ; maybe use `org-src--contents-area' ?
+;;       (setq limit-begin (car region))
+;;       (setq limit-end (cadr region))))
+
+;;   (when-let* ((r (cui-block-tags--markdown-fenced-code-body-get-range limit-begin limit-end))
+;;               (beg (car r))
+;;               (end (cadr r)))
+;;     (push-mark beg t)
+;;     (goto-char end)
+;;     (forward-line -1)
+;;     (end-of-line)
+;;     (activate-mark)
+;;     t))
+
+;; (defun cui-block-tags--string-count-char-in-direction (string position char direction)
+;;   "Count CHAR in DIRECTION from POSITION on the same line in STRING."
+;;   ;; Special case: Cursor is at or after newline, nothing to count.
+;;   (if (or (and (eq direction 'left)
+;;                (> position 0)
+;;                (char-equal (aref string (1- position)) ?\n))
+;;           (and (eq direction 'right)
+;;                (char-equal (aref string position) ?\n)))
+;;       0
+;;     ;; Normal case
+;;     (let* ((count 0)
+;;            (step (if (eq direction 'right) 1 -1))
+;;            (pos (+ position step))
+;;            (len (length string)))
+;;       (while (and (>= pos 0) (< pos len))
+;;         (let ((c (aref string pos)))
+;;           (cond
+;;            ((char-equal c char) (setq count (1+ count)))
+;;            ((char-equal c ?\n) (setq pos len)))  ; break
+;;           (setq pos (+ pos step))))
+;;       count)))
+
+
+;; (defun cui-timers--stop-current-timer (url-buffer &optional failed)
+;;   (cui--debug "cui-timers--stop-current-timer")
+;;   ;; - Remove variable
+;;   (cui-timers--remove-variable url-buffer)
+
+;;   (if (eq (current-buffer) url-buffer)
+;;       (progn
+;;         (cui--debug "cui-timers--stop-current-timer if1")
+;;         (when cui-timers--current-timer
+;;           (cancel-timer cui-timers--current-timer)
+;;           (setq cui-timers--current-timer nil)
+;;           (setq cui-timers--current-timer-remaining-ticks 0)))
+;;     ;; else
+;;     (cui--debug "cui-timers--stop-current-timer if2")
+;;     ;; - Clear time and kill buffer
+;;     (when (and url-buffer (buffer-live-p url-buffer))
+;;       (with-current-buffer url-buffer
+;;         ;; - Stop url-buffer timer
+;;         (when cui-timers--current-timer
+;;           (cancel-timer cui-timers--current-timer)
+;;           (setq cui-timers--current-timer nil)
+;;           (setq cui-timers--current-timer-remaining-ticks 0)))))
+;;   (cui-timers--update-global-progress-reporter failed))
+
+(defmacro cui-block--let-params-macro (info definitions &rest body)
+  "Bind DEFINITIONS from INFO/Org and execute BODY.
+This macro constructs a single `let*` block by mapping over the
+ DEFINITIONS list of lists: variable optional-default :type type.
+let block with body."
+  ;; 1. Generate a unique symbol for the 'info' alist.
+  ;; This ensures that if the 'info' argument is a function call,
+  ;; it only executes once at the very start of the let* block.
+  (let ((i (make-symbol "info-ptr")))
+    ;; 2. Start building the backquoted template for the final code.
+    `(let* (;; -- START OF BINDINGS LIST --
+            ;; First binding: assign the raw 'info' alist to our safe symbol.
+            (,i ,info)
+            ;; Next: 'mapcar' iterates through each item in 'definitions'.
+            ;; Each iteration returns a list like: (var-name (cui-block--get-val ...))
+            ;; The ',@' (splicing) operator unquotes and flattens these
+            ;; generated lists into the parent let* list.
+            ,@(mapcar (lambda (d)
+                (let ((s (car d))) ; 's' is the variable symbol (e.g., 'model)
+                  `(,s (cui-block--get-val
+                        ,i ; info
+                        ;; key: Convert symbol 'model to keyword ':model
+                        ,(intern (concat ":" (symbol-name s)))
+                        ;; prop: Convert symbol 'model to string "model"
+                        ,(symbol-name s)
+                        ;; default: Extract the default value (second item in definition)
+                        ,(cadr d)
+                        ;; type: Extract the :type property (e.g., 'number)
+                        ',(car (cdr (member :type d)))))))
+              definitions))
+       ;; -- END OF BINDINGS LIST --
+
+       ;; 3. Finally, place the user's @body code inside the let* block.
+       ;; All variables defined above are now available to these lines.
+       ,@body)))
+
+
+;; (defun cui-parse-org-header ()
+;;   "Parsing ai block header and parameters.
+;; Result of this function passed to `cui-req-type-functions'.
+;; Return list of arguments args."
+;;   (let* ((element (cui-block-p)) ; cui-block.el
+;;          (info (cui-block-get-info element)) ; ((:max-tokens . 150) (:service . "together") (:model . "xxx")) ; cui-block.el
+;;          (sys-prompt (or (org-entry-get-with-inheritance "SYS") ; org
+;;                          (cui-block--get-sys :info info ; cui-block.el
+;;                                              :default cui-restapi-default-chat-system-prompt)))
+;;          (noweb-control (or (org-babel-noweb-p info :eval)
+;;                             (org-entry-get (point) "cui-noweb" t)))) ; cui-restapi.el variable
+;;     ;; - Process Org params and call agent
+;;     (cui-block--let-params-macro info
+;;                            ;; format: (variable optional-default :type type)
+;;                            ((service cui-restapi-con-service :type string) ; cui-restapi.el
+;;                             (model (car (cui-restapi--get-values cui-restapi-con-model service)) :type string)
+;;                             (max-tokens cui-restapi-default-max-tokens :type number)
+;;                             (top-p nil :type number)
+;;                             (temperature nil :type number)
+;;                             (frequency-penalty nil :type number)
+;;                             (presence-penalty nil :type number)
+;;                             (stream t :type bool))
+;;                            ;; body
+;;                            (unless model
+;;                              (user-error "Model not specified nor in ai block nor in cui-restapi-con-model.  To disable model completely set it to \"nil\""))
+;;                            (when (string-equal-ignore-case model "nil")
+;;                              (setq model nil)) ; if specified as "nil" string explicitly, to disable.
+;;                            ;; return to call `cui-request-prepare' or other
+;;                            (list element noweb-control sys-prompt ; message
+;;                                  model max-tokens top-p temperature frequency-penalty presence-penalty service stream ; model params
+;;                                  info))))
+
+(ert-deftest cui-tests-block--let-params-all-from-info-test1 ()
+  "Test when all parameters are provided in the block header (info alist)."
+  (with-temp-buffer
+    (org-mode)
+    (let* ((test-block "#+begin_ai :stream t :stream1 t :sys \"A helpful LLM.\" :stream2 :max-tokens 50 :max-tokens2 :model \"gpt-3.5-turbo\" :model1 :model2 t :model3 :temperature 0.7\n#+end_ai\n")
+           (element (cui-test-setup-buffer test-block))
+           (info (progn (goto-char (org-element-property :begin element)) (cui-block-get-info))))
+      ;; (unwind-protect
+      ;; Position point inside the block for correct context, though not strictly needed for info directly.
+      (cui-block--let-params-macro info ((stream)
+                                         (stream1 t :type bool)
+                                         (stream2 0 :type number)
+                                         (stream3 1 :type number) (sys)
+                                         (max-tokens :type integer)
+                                         (max-tokens2 10 :type integer)
+                                         (model)
+                                         (model1 nil :type string)
+                                         (model2 10 :type number)
+                                         (model4 nil :type number)
+                                         (model3)
+                                         (temperature :type float)
+                                         (unknown "s"))
+                                   ;; (print (list "stream2" (type-of stream2) stream2 ))
+                                   ;; (print (list "stream3" (type-of stream3) stream3 ))
+                                   ;; (print (list "max-tokens" (type-of max-tokens) max-tokens ))
+                                   ;; (print (list "max-tokens2" (type-of max-tokens2) max-tokens2 ))
+                                   ;; (print (list "stream1" stream1))
+                                   (should (eq stream1 t))
+                                   (should (= stream3 1))
+                                   (should (eq stream2 nil))
+                                   (should (eq max-tokens2 t))
+                                   (should (string-equal stream "t"))
+                                   (should (= max-tokens 50))
+                                   (should (string-equal sys "A helpful LLM."))
+                                   (should (string-equal model "gpt-3.5-turbo"))
+                                   (should (= temperature 0.7))
+                                   (should (string-equal unknown "s"))
+                                   (should (string-equal model1 nil))
+                                   (should (= model2 0))
+                                   (should (string-equal model4 nil))
+                                   (should (string-equal model3 t))))))
+
+;; Test for `cui-block--let-params-macro':
+(ert-deftest cui-tests-block--let-params-all-from-info-test2 ()
+  (cl-letf (((symbol-function 'org-entry-get-with-inheritance)
+             (lambda (_) nil)))
+    (let ((info '((:model))))
+      (cui-block--let-params-macro info
+                             ((model nil :type string))
+                             (should (equal model nil))))))
+
+(ert-deftest cui-tests-block--let-params-all-from-info-test3 ()
+  (cl-letf (((symbol-function 'org-entry-get-with-inheritance)
+             (lambda (_) nil)))
+    (let ((info '((:model)
+                  (:model1 . "nil")
+                  (:stream1 . "nil")
+                  (:stream2 . t)
+                  ;; (:stream3)
+                  (:stream4)
+                  )))
+      (cui-block--let-params-macro info
+                             ((model nil :type string)
+                              (model1 nil :type string)
+                              (model2 nil :type string)
+                              (stream nil :type bool)
+                              (stream1 nil :type bool)
+                              (stream2 nil :type bool)
+                              (stream3 t :type bool)
+                              (stream4 nil :type bool)
+                              )
+                             ;; (print (list "stream4" stream4)))))
+                             ;; (print (list "model1" model1)) => ("nil" "nil")
+                             ;; (print (list "model" model))
+                             (should (string-equal model nil))
+                             (should (equal model1 "nil"))
+                             (should (equal model2 nil))
+                             (should (equal stream nil))
+                             (should (string-equal stream1 nil))
+                             (should (equal stream2 t))
+                             (should (equal stream3 t))
+                             (should (equal stream4 t))
+                             ))))
