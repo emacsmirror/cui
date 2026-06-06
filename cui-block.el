@@ -998,29 +998,41 @@ line."
 
 ;; -=-= Interactive: jump forward/backward
 
-(defun cui-block--find-next-prev-region (direction current-point regions)
-  "Helper to find the next or previous region boundary.
-DIRECTION is the movement direction: negative for previous, positive for
- next.
-CURRENT-POINT is the current cursor position.  REGIONS is the list of all
- region boundaries.
-Returns the position of the region boundary or nil if not found."
-  (if (> direction 0)
-      (seq-find (lambda (r) (> r current-point)) regions) ;; Next region
-    (seq-find (lambda (r) (< r current-point)) (reverse regions)))) ;; Previous region
+(defun cui-block--find-next-prev-region (&optional direction current-point regions)
+  "Find the N-th next or previous region boundary.
+DIRECTION is an integer: positive to move forward N regions, negative to
+ move backward.
+CURRENT-POINT is the position to start from (defaults to point).
+REGIONS is a list of region boundaries (defaults to
+ `cui-block--chat-role-regions`).
+Returns the position of the N-th region boundary in the given DIRECTION,
+ or nil if not found."
+  (let* ((direction (or direction 1))
+         (n (abs direction))
+         (current-point (or current-point (point)))
+         (regions (or regions (cui-block--chat-role-regions)))
+         (count 0))
+    (catch 'found
+      (dolist (r (if (> direction 0) regions (reverse regions)))
+        (when (if (> direction 0)
+                  (> r current-point)
+                (< r current-point))
+          (setq count (1+ count))
+          (when (= count n)
+            (throw 'found r))))
+      nil)))
 
 (defun cui-block-next-message (&optional arg)
   "Navigate between cui block messages based on ARG.
+Execution in not `org-mode' is supported.
 ARG may be nil, forward if positive or backward if negative between
- roles in cui block."
+ roles in cui block.
+Set cursor at next chat role or end block line or end of buffer."
   (interactive "^p")
   (or arg (setq arg 1))
   (when (and arg (< arg 0))
     (forward-line -1))
-  (let* ((regions (cui-block--chat-role-regions))
-         (current-point (point))
-         (arg (or arg 1)) ;; Default to forward movement
-         (target-region (cui-block--find-next-prev-region arg current-point regions)))
+  (let ((target-region (cui-block--find-next-prev-region arg)))
     (cui--debug "cui-block-next-message %s %s %s %s" target-region arg current-point regions)
     ;; Save cursor position if no region is active
     (unless (region-active-p) (push-mark nil t))

@@ -1119,6 +1119,50 @@ This version avoids rectangles and uses only text-based branches and nodes. This
       (goto-char (point-min))
       (should (not (re-search-forward "This version avoids rectangles and uses only text-based branches and nodes. This version avoids rectangles and uses" nil t)))
       )))
+;; -=-= Test: `cui-block--find-next-prev-region'
+(ert-deftest cui-tests-block--find-next-prev-region ()
+  ;; cui-block--find-next-prev-region-forward ()
+  ;; move forward 1 region from point=15
+  (should (equal (cui-block--find-next-prev-region 1 15 '(10 20 30 40)) 20))
+
+  ;; move forward 2 regions
+  (should (equal (cui-block--find-next-prev-region 2 15 '(10 20 30 40)) 30))
+
+  ;; move forward beyond available regions
+  (should (equal (cui-block--find-next-prev-region 4 15 '(10 20 30 40)) nil))
+
+  ;; cui-block--find-next-prev-region-backward ()
+  ;; move backward 1 region from point=35
+  (should (equal (cui-block--find-next-prev-region -1 35 '(10 20 30 40)) 30))
+
+  ;; move backward 2 regions
+  (should (equal (cui-block--find-next-prev-region -2 35 '(10 20 30 40)) 20))
+
+  ;; move backward beyond available regions
+  (should (equal (cui-block--find-next-prev-region -4 35 '(10 20 30 40)) nil))
+
+  ;; cui-block--find-next-prev-region-edge-boundaries ()
+  ;; at the exact first boundary, forward should skip to the next
+  (should (equal (cui-block--find-next-prev-region 1 10 '(10 20 30 40)) 20))
+
+  ;; at the exact last boundary, backward should skip to the previous
+  (should (equal (cui-block--find-next-prev-region -1 40 '(10 20 30 40)) 30))
+
+  ;; cui-block--find-next-prev-region-empty-or-single-region ()
+  ;; regions empty list
+  ;; (should (equal (cui-block--find-next-prev-region 1 15 '()) nil))
+  ;; regions single element, forward and backward should be nil
+  (should (equal (cui-block--find-next-prev-region 1 5 '(10)) 10))
+  (should (equal (cui-block--find-next-prev-region -1 15 '(10)) 10))
+  (should (equal (cui-block--find-next-prev-region 1 15 '(10)) nil))
+  (should (equal (cui-block--find-next-prev-region -1 5 '(10)) nil))
+
+;; (ert-deftest cui-block--find-next-prev-region-nil-arguments ()
+  ;; ;; direction and current-point nil; regions list given (assume point = 0)
+  ;; (should (equal (cui-block--find-next-prev-region nil nil '(10 20 30)) 10))
+  ;; ;; regions nil, should fallback to default, but here returns nil
+  ;; (should (equal (cui-block--find-next-prev-region 1 15 nil) nil)))
+)
 ;; -=-= provide
 (provide 'cui-tests-block)
 

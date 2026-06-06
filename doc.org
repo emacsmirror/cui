@@ -483,7 +483,42 @@ Loop show: org-cycle-global(nil) -> org-cycle((4)) -> org-cycle-internal-global(
 
 
 
+* M-. xref-find-definitions
+Find all available backedns
+#+begin_src elisp :lexical t :results none :exports code :eval no
+(let (backends)
+  (mapatoms
+   (lambda (sym)
+     (when (and (fboundp sym)
+                (string-match-p "-xref-backend$" (symbol-name sym)))
+       (push sym backends))))
+  backends)
+;; returns: (eglot-xref-backend backtrace--xref-backend etags--xref-backend elisp--xref-backend)
+#+end_src
 
+Read pill:
+: (xref-find-definitions (xref-backend-identifier-at-point (xref-find-backend)))
+
+Following code for ~.emacs~ allow to use ~M-.~ key or ~xref-find-definitions~ command for words in Elisp Markdown blocks:
+#+begin_src elisp :lexical t :results none :exports code :eval no
+(defun cui-xref-elisp-advice (orig-fun &rest args)
+  "If inside an Org source block, jump to definition using the language's major mode."
+  (if (bound-and-true-p cui-mode)
+      (let* ((beg (car (save-excursion (cui-block--markdown-block-p))))
+             (lang (when beg (save-excursion (goto-char beg)
+                                             (when (looking-at cui-block--markdown-begin-re)
+                                               (match-string 1))))))
+        (if (member lang '("lisp" "elisp" "emacs-lisp"))
+            (let ((xref-backend-functions '(elisp--xref-backend)))
+              (with-syntax-table emacs-lisp-mode-syntax-table
+                (apply orig-fun args)))
+          ;; else
+          (apply orig-fun args)))
+    ;; else
+    (apply orig-fun args)))
+
+(advice-add 'xref-find-definitions :around #'cui-xref-advice)
+#+end_src
 * fill - cui-block-fill-function
 - cui-block-fill-insert
   - fill-region-as-paragraph - stream

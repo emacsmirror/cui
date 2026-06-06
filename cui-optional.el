@@ -117,12 +117,31 @@ Should be added the last to be executed first."
 ;;          (not (cui-block--markdown-block-p)))))
 
 ;; (defun cui-optional--markdown-end-of-subtree ()
-;;   "`org-end-of-subtree' uses `org-back-to-heading-or-point-min'."
-;;   (let ((current-level (save-excursion
+;;   "`org-end-of-subtree' uses `org-back-to-heading-or-point-min'.
+;; Set cursor at first header after end.
+;; Or set cursor at --- or at next chat prefix []: or at the end of chat
+;;  block or end of buffer."
+;;   (let* ((current-level (save-excursion
 ;;                          (beginning-of-line)
 ;;                          (if (looking-at "^\\(#+\\) ")
 ;;                              (length (match-string 1))
-;;                            0))))
+;;                            0)))
+;;          (end-of-message (save-excursion
+;;                            (cui-block--find-next-prev-region)))
+;;          (page-sep (save-excursion
+;;                      (catch 'result
+;;                        (while (re-search-forward "^---" end-of-message t)
+;;                          (when (save-excursion (cui-block--markdown-block-p))
+;;                            (throw 'result (point))))
+;;                        nil))) ; if not found, return nil
+
+;;     (end-of-line)
+;;     (if (and (derived-mode-p 'org-mode)
+;;              (boundp 'cui-mode)
+;;              (local-variable-p 'cui-mode)
+;;              cui-mode
+;;              (cui-block-p))
+;;         (let (l
 ;;     (re-search-forward (format "^\\(#\\{1,%d\\}\\) " (1- current-level)) nil t)))
 ;;   ;; (if (org-before-first-heading-p)
 ;;   ;;     (goto-char (point-min))
@@ -135,11 +154,12 @@ Should be added the last to be executed first."
 ;; (save-excursion
 ;;   (let ((eoh (line-end-position)) ; end of line
 ;;         (eos (save-excursion
-;; 	       (org-end-of-subtree t t) ; set cursor at first header after end
+;; 	       (cui-optional--markdown-end-of-subtree) ; set cursor at first header after end
 ;; 	       (unless (eobp) (forward-char -1))
 ;; 	       (point))))
 
 ;; )))
+
 ;; (defun cui-optional--markdown-end-of-subtree ()
 ;;   "`org-end-of-subtree'"
 ;;   (org-back-to-heading-or-point-min invisible-ok)

@@ -18,6 +18,7 @@ Protocol: “OpenAI like” HTTP REST API. (url.el)
 - *Parallel requests* in the same or different buffer without blocking
 - *Highlighting* of markdown big blocks, tags and links, headers, bold text, Org tables, LaTeX
 - *Request with image or audio* like ~@/a.jpg~ or ~[[/a.wav]]~ or ~[[file:/a.jpg]]~
+- *Xref fix* For Elisp in Markdown blocks
 - *Transparency* for inspecting raw data of request, powerful debugger
 - *Customization and autofilling*, hooks
 - *Prompt engineering* tools, there is ~:chain~ of calls out-of-the-box

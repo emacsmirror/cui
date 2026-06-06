@@ -635,6 +635,24 @@ ORIG-FUN is `cui--org-babel-get-src-block-info-advice' and its ARGS."
       (cui--org-babel-get-src-block-info no-eval datum)
       ;; else
       (apply orig-fun args))))
+;; -=-= xref for Markdown blocks
+
+(defun cui-xref-elisp-advice (orig-fun &rest args)
+  "If inside an Org source block, jump to definition using the language's major mode."
+  (if (bound-and-true-p cui-mode)
+      (let* ((beg (car (save-excursion (cui-block--markdown-block-p))))
+             (lang (when beg (save-excursion (goto-char beg)
+                                             (when (looking-at cui-block--markdown-begin-re)
+                                               (match-string 1))))))
+        (if (member lang '("lisp" "elisp" "emacs-lisp"))
+            (let ((xref-backend-functions '(elisp--xref-backend)))
+              (with-syntax-table emacs-lisp-mode-syntax-table
+                (apply orig-fun args)))
+          ;; else
+          (apply orig-fun args)))
+    ;; else
+    (apply orig-fun args)))
+
 ;; -=-= Minor mode
 
 ;;;###autoload
@@ -665,7 +683,10 @@ ORIG-FUN is `cui--org-babel-get-src-block-info-advice' and its ARGS."
         (advice-add 'org-babel-get-src-block-info :around #'cui--org-babel-get-src-block-info-advice)
         (advice-add 'org-babel-where-is-src-block-head :around #'cui--org-babel-where-is-src-block-head-advice)
         (add-to-list 'org-babel-tangle-lang-exts '("ai" . "ai")) ; language . ext
-        (add-to-list 'org-babel-tangle-lang-exts '("cui" . "cui")))
+        (add-to-list 'org-babel-tangle-lang-exts '("cui" . "cui"))
+        ;; - xref for Markdown blocks
+        (advice-add 'xref-find-definitions :around #'cui-xref-elisp-advice)
+        )
     ;; else - off
     (remove-hook 'org-ctrl-c-ctrl-c-hook #'cui-ctrl-c-ctrl-c 'local)
     (advice-remove 'keyboard-quit #'cui-keyboard-quit)
@@ -674,12 +695,13 @@ ORIG-FUN is `cui--org-babel-get-src-block-info-advice' and its ARGS."
     (org-set-font-lock-defaults)
     (font-lock-refresh-defaults)
     ;; tangle
-    (advice-remove 'org-babel-get-src-block-info #'cui--org-babel-get-src-block-info-advice)
-    (advice-remove 'org-babel-where-is-src-block-head #'cui--org-babel-where-is-src-block-head-advice)
-    (setq org-babel-tangle-lang-exts
-      (remove '("ai" . "ai") org-babel-tangle-lang-exts))
-    (setq org-babel-tangle-lang-exts
-      (remove '("cui" . "cui") org-babel-tangle-lang-exts))))
+    ;; (advice-remove 'org-babel-get-src-block-info #'cui--org-babel-get-src-block-info-advice)
+    ;; (advice-remove 'org-babel-where-is-src-block-head #'cui--org-babel-where-is-src-block-head-advice)
+    ;; (setq org-babel-tangle-lang-exts
+    ;;   (remove '("ai" . "ai") org-babel-tangle-lang-exts))
+    ;; (setq org-babel-tangle-lang-exts
+    ;;   (remove '("cui" . "cui") org-babel-tangle-lang-exts))
+    ))
 
 (defun cui--get-buffers-for-element (&optional element)
   "Simplify getting url buffers associated with cui block ELEMENT.
