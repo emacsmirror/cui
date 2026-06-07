@@ -482,7 +482,6 @@ Loop show: org-cycle-global(nil) -> org-cycle((4)) -> org-cycle-internal-global(
 
 
 
-
 * M-. xref-find-definitions
 Find all available backedns
 #+begin_src elisp :lexical t :results none :exports code :eval no

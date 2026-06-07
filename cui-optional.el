@@ -107,64 +107,92 @@ Should be added the last to be executed first."
           (insert " ") ; this effectively quote standard headers
           (end-of-line))))))
 
-;; -=-= Markdown: folding _____TODO_______
-;; TODO: - "#" may be inside markdown block!!!
+;; -=-= Markdown: folding
 
-;; (defun cui-optional--markdown-heading-p ()
-;;   (save-excursion
-;;     (forward-line 0)
-;;     (and (looking-at cui-block--markdown-header-re)
-;;          (not (cui-block--markdown-block-p)))))
+(defun cui-optional--markdown-heading-p ()
+  "Before first heading?
+like `org-before-first-heading-p'."
+  (save-excursion
+    (forward-line 0)
+    (and (looking-at cui-block--markdown-header-re)
+         (not (cui-block--markdown-block-p)))))
 
-;; (defun cui-optional--markdown-end-of-subtree ()
-;;   "`org-end-of-subtree' uses `org-back-to-heading-or-point-min'.
-;; Set cursor at first header after end.
-;; Or set cursor at --- or at next chat prefix []: or at the end of chat
-;;  block or end of buffer."
-;;   (let* ((current-level (save-excursion
-;;                          (beginning-of-line)
-;;                          (if (looking-at "^\\(#+\\) ")
-;;                              (length (match-string 1))
-;;                            0)))
-;;          (end-of-message (save-excursion
-;;                            (cui-block--find-next-prev-region)))
-;;          (page-sep (save-excursion
-;;                      (catch 'result
-;;                        (while (re-search-forward "^---" end-of-message t)
-;;                          (when (save-excursion (cui-block--markdown-block-p))
-;;                            (throw 'result (point))))
-;;                        nil))) ; if not found, return nil
+(defun cui-optional--markdown-back-to-heading ()
+  "Go back to beginning of heading, return point or nil.
+Respect message prefixes, cui blocks and --- page separator.
+`org-back-to-heading-or-point-min'."
+  (or (when (cui-optional--markdown-heading-p) (goto-char (line-beginning-position))) ; for returinging point
+      (let* ((beg-of-message (cui-block--find-next-prev-region -1))
+             (page-sep (save-excursion
+                        (catch 'result
+                          (while (re-search-backward "^---" beg-of-message t)
+                            (when (save-excursion (not (cui-block--markdown-block-p)))
+                              (throw 'result (line-beginning-position))))
+                          nil)))
+             (min-lim-pos (max beg-of-message ; begin of prefix or block
+                               (or page-sep (point-min)))))
+        (re-search-backward cui-block--markdown-header-re min-lim-pos t))))
 
-;;     (end-of-line)
-;;     (if (and (derived-mode-p 'org-mode)
-;;              (boundp 'cui-mode)
-;;              (local-variable-p 'cui-mode)
-;;              cui-mode
-;;              (cui-block-p))
-;;         (let (l
-;;     (re-search-forward (format "^\\(#\\{1,%d\\}\\) " (1- current-level)) nil t)))
-;;   ;; (if (org-before-first-heading-p)
-;;   ;;     (goto-char (point-min))
-;;   ;;   (org-back-to-heading invisible-ok))
-;;   ;; )
+(defun cui-optional--markdown-end-of-subtree ()
+  "Goto to the end of a visible subtree at point and return point.
+`org-end-of-subtree' uses `org-back-to-heading-or-point-min'.
+Cursors should be at header.
+Or set cursor at --- or at next chat prefix []: or at the end of chat
+ block or end of buffer."
+  (when (cui-optional--markdown-back-to-heading)
+    (let* ((current-level (save-excursion
+                            (beginning-of-line)
+                            (if (looking-at "^\\(#+\\) ")
+                                (length (match-string 1))
+                              1)))
+           (end-of-message (save-excursion
+                             (cui-block--find-next-prev-region))) ; or end of cui block
+           (page-sep (save-excursion
+                       (catch 'result
+                         (while (re-search-forward "^---" end-of-message t)
+                           (when (save-excursion (not (cui-block--markdown-block-p)))
+                             (throw 'result (line-beginning-position))))
+                         nil)))
+           (lim-pos (min end-of-message (or page-sep (point-max))))) ; if not found, return nil
 
-;; (defun cui-optional--markdown-cycle ()
-;; "'org-cycle-internal-local'
-;; `org-fold-folded-p'."
-;; (save-excursion
-;;   (let ((eoh (line-end-position)) ; end of line
-;;         (eos (save-excursion
-;; 	       (cui-optional--markdown-end-of-subtree) ; set cursor at first header after end
-;; 	       (unless (eobp) (forward-char -1))
-;; 	       (point))))
+      (end-of-line)
+      (if (re-search-forward (format "^\\(#\\{1,%d\\}\\) " current-level) lim-pos t)
+          (goto-char (line-beginning-position))
+        ;; else
+        (goto-char lim-pos)
+        (beginning-of-line)
+        (point)))))
 
-;; )))
+(defun cui-optional-markdown-cycle (&optional _)
+  "Fold/unfold Markdown header.
+Only works in `org-mode'.
+'org-cycle-internal-local'
+`org-fold-folded-p'.
+Return t if success."
+  (interactive)
+  (when (and (derived-mode-p 'org-mode)
+             (cui-block-p)
+             (cui-optional--markdown-heading-p))
+    (save-excursion
+      (let ((eoh (line-end-position)) ; end of line
+            (eos (save-excursion
+                   (cui-optional--markdown-end-of-subtree) ; set cursor at first header after end
+                   (unless (eobp) (forward-char -1))
+                   (point))))
+        (if (= eoh eos) ; empty header
+            (org-unlogged-message "EMPTY")
+          ;; else
+          (beginning-of-line)
+          (when (not (org-invisible-p)) ; header is visible itself
+            (end-of-line)
+            (if (org-invisible-p)
+                (progn
+                  (org-fold-region eoh eos nil 'outline) ; show
+                  (org-unlogged-message "SUBTREE"))
+              ;; else
+              (org-fold-region eoh eos t 'outline) ; hide
+              (org-unlogged-message "FOLDED"))))))))
 
-;; (defun cui-optional--markdown-end-of-subtree ()
-;;   "`org-end-of-subtree'"
-;;   (org-back-to-heading-or-point-min invisible-ok)
-
-;;   )
 ;;;; provide
 (provide 'cui-optional)
 ;;; cui-optional.el ends here
