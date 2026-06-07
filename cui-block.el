@@ -1033,7 +1033,7 @@ Set cursor at next chat role or end block line or end of buffer."
   (when (and arg (< arg 0))
     (forward-line -1))
   (let ((target-region (cui-block--find-next-prev-region arg)))
-    (cui--debug "cui-block-next-message %s %s %s %s" target-region arg current-point regions)
+    (cui--debug "cui-block-next-message %s %s" target-region arg)
     ;; Save cursor position if no region is active
     (unless (region-active-p) (push-mark nil t))
     ;; Jump to the target region if it exists

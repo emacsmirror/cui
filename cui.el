@@ -638,7 +638,10 @@ ORIG-FUN is `cui--org-babel-get-src-block-info-advice' and its ARGS."
 ;; -=-= xref for Markdown blocks
 
 (defun cui-xref-elisp-advice (orig-fun &rest args)
-  "If inside an Org source block, jump to definition using the language's major mode."
+  "If inside makrdown block, jump to definition using the language.
+Support only elisp.
+Argument ORIG-FUN is `xref-find-definitions'.
+Optional argument ARGS is `xref-find-definitions' related arguments."
   (if (bound-and-true-p cui-mode)
       (let* ((beg (car (save-excursion (cui-block--markdown-block-p))))
              (lang (when beg (save-excursion (goto-char beg)
@@ -646,6 +649,7 @@ ORIG-FUN is `cui--org-babel-get-src-block-info-advice' and its ARGS."
                                                (match-string 1))))))
         (if (member lang '("lisp" "elisp" "emacs-lisp"))
             (let ((xref-backend-functions '(elisp--xref-backend)))
+              (setq xref-backend-functions xref-backend-functions)  ; noqa for: Warning: Unused lexical variable
               (with-syntax-table emacs-lisp-mode-syntax-table
                 (apply orig-fun args)))
           ;; else
@@ -685,8 +689,7 @@ ORIG-FUN is `cui--org-babel-get-src-block-info-advice' and its ARGS."
         (add-to-list 'org-babel-tangle-lang-exts '("ai" . "ai")) ; language . ext
         (add-to-list 'org-babel-tangle-lang-exts '("cui" . "cui"))
         ;; - xref for Markdown blocks
-        (advice-add 'xref-find-definitions :around #'cui-xref-elisp-advice)
-        )
+        (advice-add 'xref-find-definitions :around #'cui-xref-elisp-advice))
     ;; else - off
     (remove-hook 'org-ctrl-c-ctrl-c-hook #'cui-ctrl-c-ctrl-c 'local)
     (advice-remove 'keyboard-quit #'cui-keyboard-quit)
