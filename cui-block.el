@@ -1648,7 +1648,8 @@ support splitting."
   (let (b1 e1 b2 e2)
     (goto-char start)
     ;; 1. *Bold*
-    (while (re-search-forward "\\*\\{1,3\\}\\(\\w[^*\n]+\\)\\*\\{1,3\\}" end t)
+    ;; old: "\\*\\{1,3\\}\\(\\w[^*\n]+\\)\\*\\{1,3\\}"
+    (while (re-search-forward "\\*\\{1,3\\}\\([^*\n]+\\)\\*\\{1,3\\}" end t)
       ;; (if (re-search-forward "\\*\\{2,3\\}\\(\\w[^*]+\\)\\*\\{2,3\\}" (line-end-position) t)
       (progn
         (setq b1 (match-beginning 0))
@@ -1808,6 +1809,44 @@ TODO: fontify if there is only end of cui block on page."
 
 ;; -=-= Fill-region, paragraph
 
+(defun cui-block-fill-predicate-to-nobreak-lines ()
+  "Predicate to skip markdown blocks, tables, quotes, and asterisk splits.
+If it returns t at the very start of a line or loop evaluation, it can signal
+to the fill engine that the current context should not be touched."
+  ;; Protect internal Emacs match data so our regex checks don't break the filling engine
+  (save-match-data
+    ;; Preserve the cursor's original position when this function exits
+    (or
+     ;; ======================================================================
+     ;; Exception A: Is the current line a blockquote or table?
+     ;; ======================================================================
+     (save-excursion
+       ;; Move the cursor to column 0 of the current line to check line-start anchors
+       (forward-line 0)
+
+       (or (looking-at "^> ")             ; Match Markdown/email-style blockquotes
+           (looking-at "^[ \t]*\\(?:|\\|\\+-[-+]\\)"))) ; Match Org or Markdown tables (| or +--+)
+
+     ;; ======================================================================
+     ;; Exception B: Your asterisk inline protection rule (* or **)
+     ;; ======================================================================
+     (save-excursion
+       (let ((pos (point)))
+         ;; 1. Search backward for the nearest opening delimiter (* or **) on this line
+         (when (re-search-backward "\\(\\*\\{1,2\\}\\)[^* \t\n]" (line-beginning-position) t)
+           (let ((start-pos (match-beginning 1)) ; Capture the exact start position of the opening asterisks
+                 (delim (match-string 1)))       ; Extract the delimiter string ("*" or "**") to match against
+
+             ;; 2. Search forward for the matching closing delimiter + any trailing punctuation
+             (when (re-search-forward (concat "[^* \t\n]" (regexp-quote delim) "\\([.,;:!?]*\\)")
+                                      (line-end-position) t)
+               (let ((end-pos (match-end 0)))    ; Capture the absolute end position of the protected block
+
+                 ;; 3. Check if the original fill-break point (pos) sits inside this boundary.
+                 ;; If it does, return `t` to prevent Emacs from breaking the line here.
+                 (and (> pos start-pos) (<= pos end-pos)))))))))))
+
+
 (defmacro cui-block--apply-to-region-lines (func start end &rest args)
   "Apply FUNC to each line in region from START to END with ARGS.
 START and END is a pointer.  FUNC is called with
@@ -1815,7 +1854,9 @@ START and END is a pointer.  FUNC is called with
 FUNC should place  point to to the  next line after execution  if end at
 the end of the line.
 Return marker of END."
-  `(let ((end-marker (copy-marker ,end)))
+  `(let ((end-marker (copy-marker ,end))
+         (fill-nobreak-predicate (cons #'cui-block-fill-predicate-to-nobreak-lines
+                                       fill-nobreak-predicate)))
      (save-excursion
        (goto-char ,start)
        (while (< (point) (marker-position end-marker))
@@ -1826,24 +1867,10 @@ Return marker of END."
              (forward-line)))))
      end-marker))
 
-(defun cui-block-fill-region-as-paragraph (from to &optional justify nosqueeze squeeze-after)
-  "Ignore lines that begin with \"< \".
-For `fill-region-as-paragraph' that applied per lines.
-Argument FROM TO JUSTIFY NOSQUEEZE SQUEEZE-AFTER is arguments of
-fill-region-as-paragraph."
-  ;; (cui--debug "cui-block-fill-region-as-paragraph %s %s" from to)
-  (cui--debug "cui-block-fill-region-as-paragraph %s %s" from to justify nosqueeze squeeze-after)
-  (goto-char (min from to))
-  (if (not (and (looking-at "^> ")
-               (looking-at "^[ \t]*\\(|\\|\\+-[-+]\\).*"))) ; tables
-      (funcall #'fill-region-as-paragraph from to justify nosqueeze squeeze-after)
-    ;; else - next line
-    (goto-char to)
-    (unless (bolp)
-      (forward-line))))
 
 (defun cui-block-fill-region (beg end &optional justify)
-  "Fill region, ignore markdown blocks, quoted lines and tables.
+  "Fill region line by line for not streaming.
+Ignore markdown blocks, quoted lines and tables.
 Used for not streaming one time insertion of response.
 BEG END and JUSTIFY have same as in `fill-region-as-paragraph'.
 TODO: use `forward-paragraph' instead of `forward-line'.
@@ -1880,7 +1907,7 @@ Return t if text was changed, nil otherwise."
                                end))
             ;; (cui--debug "cui-block-fill-region N5")
             (setq cur (marker-position
-                       (cui-block--apply-to-region-lines #'cui-block-fill-region-as-paragraph
+                       (cui-block--apply-to-region-lines #'fill-region-as-paragraph
                                                          cur
                                                          middle-end
                                                          justify))))))
@@ -1927,35 +1954,6 @@ POS is position before insertion."
       ;; else not stream, single response.
       (let ((end (or pos (line-beginning-position))))
         (cui-block-fill-region end (point))))))
-
-;; (defun my/org-fill-element-advice (orig-fun &optional justify)
-;;   "Advice around `org-fill-element`.
-;; If at headline, skip filling. Otherwise call original function."
-;;   (let ((element (save-excursion (end-of-line) (org-element-at-point))))
-;;     (unless (cui-block-tags--markdown-fenced-code-body-get-range)
-;;       (funcall orig-fun justify))))
-
-;; (advice-add 'org-fill-element :around #'my/org-fill-element-advice)
-
-
-;; (defun cui-restapi--forward-paragraph (arg)
-;;   "Normal with `forward-paragraph' Skipping markdown blocks.
-;; Works for positive ARG now only, negative not supported now."
-;;   (print (list "cui-restapi--forward-paragraph" arg))
-;;   (funcall #'forward-paragraph arg)
-;;   (or arg (setq arg 1))
-;;   (when-let* ((r (cui-block-tags--markdown-fenced-code-body-get-range))
-;;                     (beg (car r)) ; after header
-;;                     (end (cadr r))) ; at end line
-;;     (when (< arg 0) (not (bobp))
-;;           (when (> end (point))
-;;             (goto-char beg)
-;;             (forward-line -1)))
-;;     (when (> arg 0) (not (eobp))
-;;         ;; inside or at the first line? if at first line, do nothin, if in the middle of mardkown, then go to the end
-;;         (unless (save-excursion (forward-line -1) (eq beg (point)))
-;;           (goto-char end)
-;;           (forward-line)))))
 
 ;; -=-= Fill-region, paragraph - interactive
 
@@ -2015,7 +2013,6 @@ Return t paragraph was filled-changed."
           (cui--debug "cui-block-fill-paragraph N2 %s" beg end)
           (cui-block-fill-region beg end)) ; return t if changed
         ))))
-
 
 ;;;; provide
 (provide 'cui-block)

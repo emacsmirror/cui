@@ -376,9 +376,9 @@ and INFO-ALIST is the parameters from its header."
               (insert "Some text here asdasdasdasd asda asd asd asd asd asd asd as d\n")
               (insert "Some.\n")
               (goto-char 1)
-              (cui-block--apply-to-region-lines #'cui-block-fill-region-as-paragraph (point-min) (point-max) nil)
+              (cui-block--apply-to-region-lines #'fill-region-as-paragraph (point-min) (point-max) nil)
               (let ((strings (string-split (buffer-substring-no-properties (point-min) (point-max)) "\n")))
-                (< (length (nth 1 strings)) 10))))))'
+                (< (length (nth 1 strings)) 10))))))
 ;; -=-=  Test Markdown header regex cui-block--markdown-header-re
 (ert-deftest cui-tests-block--markdown-header-re ()
   (equal
@@ -1163,6 +1163,141 @@ This version avoids rectangles and uses only text-based branches and nodes. This
   ;; ;; regions nil, should fallback to default, but here returns nil
   ;; (should (equal (cui-block--find-next-prev-region 1 15 nil) nil)))
 )
+;; -=-= Test: fill paragraph
+
+(defmacro cui-block-test-with-fill-env (input expected &rest body)
+  "Helper macro to isolate temporary buffer setup for filling tests."
+  `(with-temp-buffer
+     (setq fill-column 20
+           fill-prefix "")
+     (insert ,input)
+     ,@body
+     (should (string= (buffer-string) ,expected))))
+
+;; ======================================================================
+;; Profile 1: Inline Asterisks Protection Rules
+;; ======================================================================
+
+(ert-deftest cui-block-fill-inline-double-asterisks ()
+  "Ensure matching double asterisks block line breaking."
+  (cui-block-test-with-fill-env
+   "Line with **1unbreakabletext** here."
+   "Line with\n**1unbreakabletext**\nhere."
+   (cui-block--apply-to-region-lines #'fill-region-as-paragraph (point-min) (point-max))))
+
+(ert-deftest cui-block-fill-inline-single-asterisks ()
+  "Ensure matching single asterisks block line breaking."
+  (cui-block-test-with-fill-env
+   "Line with *2unbreakabletext* here."
+   "Line with\n*2unbreakabletext*\nhere."
+   (cui-block--apply-to-region-lines #'fill-region-as-paragraph (point-min) (point-max))))
+
+(ert-deftest cui-block-fill-mismatched-asterisks ()
+  "Ensure mismatched asterisks are allowed to break naturally."
+  (cui-block-test-with-fill-env
+   "Line with **3breakabletext* here."
+   "Line with\n**3breakabletext*\nhere."
+   (cui-block--apply-to-region-lines #'fill-region-as-paragraph (point-min) (point-max))))
+
+(ert-deftest cui-block-fill-asterisks-with-punctuation ()
+  "Ensure trailing punctuation doesn't break asterisk detection."
+  (cui-block-test-with-fill-env
+   "Line with **4unbreakabletext**, okay?"
+   "Line with\n**4unbreakabletext**,\nokay?"
+   (cui-block--apply-to-region-lines #'fill-region-as-paragraph (point-min) (point-max))))
+
+(ert-deftest cui-block-fill-asterisks-with-internal-spaces ()
+  "Ensure asterisks containing multiple internal words are preserved."
+  (cui-block-test-with-fill-env
+   "Line with **4unbre akab letext**, okay?"
+   "Line with\n**4unbre akab letext**,\nokay?"
+   (cui-block--apply-to-region-lines #'fill-region-as-paragraph (point-min) (point-max))))
+
+(ert-deftest cui-block-fill-multiple-asterisks-sequences ()
+  "Ensure multiple highlighted sequences on a single stretch handle correctly."
+  (cui-block-test-with-fill-env
+   "**with** **4unbre akab letext**, okay?"
+   "**with**\n  **4unbre akab letext**,\n  okay?"
+   (cui-block--apply-to-region-lines #'fill-region-as-paragraph (point-min) (point-max))))
+
+;; ======================================================================
+;; Profile 2: Layout Block Structural Exclusions
+;; ======================================================================
+
+(ert-deftest cui-block-fill-blockquote-exclusion ()
+  "Ensure email/markdown blockquotes remain entirely un-filled."
+  (cui-block-test-with-fill-env
+   "> This is a very long blockquote line that exceeds twenty characters."
+   "> This is a very long blockquote line that exceeds twenty characters."
+   (cui-block--apply-to-region-lines #'fill-region-as-paragraph (point-min) (point-max))))
+
+(ert-deftest cui-block-fill-table-pipe-exclusion ()
+  "Ensure pipe-separated structural tables are ignored."
+  (cui-block-test-with-fill-env
+   "| Feature | Status | Long Description Here |"
+   "| Feature | Status | Long Description Here |"
+   (cui-block--apply-to-region-lines #'fill-region-as-paragraph (point-min) (point-max))))
+
+(ert-deftest cui-block-fill-table-grid-exclusion ()
+  "Ensure multi-line grid-border markdown/org tables are ignored."
+  (cui-block-test-with-fill-env
+   "+-+---+---\n| A | B | C |\n+-+---+---+"
+   "+-+---+---\n| A | B | C |\n+-+---+---+"
+   (cui-block--apply-to-region-lines #'fill-region-as-paragraph (point-min) (point-max))))
+
+;; ======================================================================
+;; Profile 3: Baseline Normalization
+;; ======================================================================
+
+(ert-deftest cui-block-fill-plain-text-fallback ()
+  "Ensure normal paragraph sentences fill normally when no rules match."
+  (cui-block-test-with-fill-env
+   "Line with a verylongbreakablesequence here."
+   "Line with a\nverylongbreakablesequence\nhere."
+   (cui-block--apply-to-region-lines #'fill-region-as-paragraph (point-min) (point-max))))
+
+;; OLD original:
+;; (defun my-test-asterisk-filling-robust ()
+;;   (interactive)
+;;   (with-temp-buffer
+;;     (let ((passed t)
+;;           (fill-column 20)
+;;           (fill-prefix "")
+;;           (cases '(;; 1. Standard wrapping behavior
+;;                    ("Line with **1unbreakabletext** here." . "Line with\n**1unbreakabletext**\nhere.")
+;;                    ("Line with *2unbreakabletext* here."   . "Line with\n*2unbreakabletext*\nhere.")
+;;                    ;; 2. Mismatched delimiters SHOULD break if necessary
+;;                    ("Line with **3breakabletext* here."    . "Line with\n**3breakabletext*\nhere.")
+;;                    ;; 3. Trailing punctuation should not break the logic
+;;                    ("Line with **4unbreakabletext**, okay?" . "Line with\n**4unbreakabletext**,\nokay?")
+;;                    ("Line with **4unbre akab letext**, okay?" . "Line with\n**4unbre akab letext**,\nokay?")
+;;                    ("**with** **4unbre akab letext**, okay?" . "**with**\n  **4unbre akab letext**,\n  okay?")
+
+;;                    ("> This is a very long blockquote line that exceeds twenty characters."
+;;                     . "> This is a very long blockquote line that exceeds twenty characters.")
+
+;;                    ;; 3. Tables (Should remain entirely untouched)
+;;                    ("| Feature | Status | Long Description Here |"
+;;                     . "| Feature | Status | Long Description Here |")
+;;                    ("+-+---+---+\n| A | B | C |\n+-+---+---+"
+;;                     . "+-+---+---+\n| A | B | C |\n+-+---+---+")
+;;                    ;; 5. Plain text without asterisks should break normally
+;;                    ("Line with a verylongbreakablesequence here." . "Line with a\nverylongbreakablesequence\nhere."))))
+;;       (dolist (c cases)
+;;         (erase-buffer)
+;;         (insert (car c))
+;;         ;; (cui-block-fill-region-as-paragraph (point-min) (point-max))
+;;         ;; (let ((fill-nobreak-predicate (cons #'cui-block-fill-predicate-to-nobreak-lines
+;;         ;;                                     fill-nobreak-predicate)))
+;;           (cui-block--apply-to-region-lines #'fill-region-as-paragraph (point-min) (point-max))
+;;         (unless (string= (buffer-string) (cdr c))
+;;           (setq passed nil)
+;;           (message "FAIL: %S\nGot:  %S\nExp:  %S\n" (car c) (buffer-string) (cdr c))))
+;;       (message (if passed "--- ALL ROBUST TESTS PASSED ---" "--- COMPREHENSIVE TESTS FAILED ---")))))
+
+;; (my-test-asterisk-filling-robust)
+
+
 ;; -=-= provide
 (provide 'cui-tests-block)
 
