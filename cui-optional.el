@@ -287,16 +287,22 @@ Collapses text below the highest-level headline found in each field."
           (cui--debug "cui-optional-cycle-content-by-block-fields N2 %s" (point))
           (let ((beg (line-end-position))
                 ;; Use your helper function to instantly locate the boundary
-                (end (cui-optional--markdown-end-of-subtree)))
-            (cui--debug "cui-optional-cycle-content-by-block-fields N3 %s" beg end)
+                (end (save-excursion (cui-optional--markdown-end-of-subtree))))
 
-            ;; 3. Hide the found region if valid
-            (when (> end beg)
-              (cui-optional--hide-region-text-prop beg (1- end)))
+                (cui--debug "cui-optional-cycle-content-by-block-fields N3 %s" beg end)
 
-            ;; 4. Move point to the end of the subtree to skip over hidden text
-            ;; and continue searching for the next field's headlines.
-            (goto-char end)))))))
+                ;; 3. Hide the found region if valid
+                (when (and end (> end beg))
+                  (cui--debug "cui-optional-cycle-content-by-block-fields N31")
+                  (cui-optional--hide-region-text-prop beg (1- end))
+
+                  ;; 4. Move point to the end of the subtree to skip over hidden text
+                  ;; and continue searching for the next field's headlines.
+
+                  (cui--debug "cui-optional-cycle-content-by-block-fields N32")
+                  (goto-char end))))))))
+
+
 
 
 
